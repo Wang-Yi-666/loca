@@ -1,0 +1,96 @@
+{
+  // One-click run/debug targets. Open the Run and Debug panel (Ctrl+Shift+D)
+  // and pick a configuration from the dropdown, then press F5.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // The interactive CLI. Runs with the project root as its workspace, so
+      // it sees the same files the web GUI does.
+      // "integratedTerminal" is required: the REPL reads from stdin, which the
+      // Debug Console cannot provide.
+      "name": "loca chat (CLI REPL)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "loca.cli",
+      "args": ["chat"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      // Same REPL, but sandboxed to an empty scratch directory. Use this when
+      // you want the agent to create/delete files freely without touching the
+      // project. Note: the workspace root IS this folder, so ask for files by
+      // plain name ("hello.py"), not "playground/hello.py".
+      "name": "loca chat (sandboxed to playground/)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "loca.cli",
+      "args": ["chat", "--workspace", "${workspaceFolder}/playground"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      // Plain streaming chat with no tools exposed — useful for isolating
+      // provider/streaming problems from tool problems.
+      "name": "loca chat --no-tools",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "loca.cli",
+      "args": ["chat", "--no-tools"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      // The web GUI. Starts uvicorn and opens the browser once it is up.
+      "name": "loca serve (Web GUI)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "loca.cli",
+      "args": ["serve", "--host", "127.0.0.1", "--port", "8765"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "serverReadyAction": {
+        "pattern": "Uvicorn running on (https?://\\S+)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      }
+    },
+    {
+      // Diagnostics: which tools exist, which providers have a key.
+      "name": "loca tools / providers",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "loca.cli",
+      "args": ["tools"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      // Offline suite: everything except the live-API e2e tests.
+      "name": "pytest (offline)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-v", "-m", "not live"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      // The full suite, including the tests that call the real DeepSeek API.
+      "name": "pytest (all, hits real API)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-v"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

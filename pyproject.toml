@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loca"
+version = "0.1.0"
+description = "A lightweight harness for coding agents. Unified tool-use protocol over DeepSeek / OpenAI / Anthropic with streaming, error recovery, and observability."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "loca contributors" }]
+keywords = ["agent", "harness", "tool-use", "coding-agent", "llm"]
+
+dependencies = [
+    "openai>=1.40.0",
+    "pydantic>=2.6",
+    "python-dotenv>=1.0",
+    "rich>=13.7",
+    "tenacity>=8.2",
+    "jsonschema>=4.21",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "sse-starlette>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+loca = "loca.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["loca*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+addopts = "-ra -q"
+markers = [
+    # Tests that hit a real provider API. They self-skip when no key is
+    # configured, but you can also deselect them explicitly:
+    #   pytest -m "not live"
+    "live: calls a real provider API (requires a key, costs tokens)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = [
+    # ``class Role(str, Enum)`` is deliberate: the str mixin keeps ``.value``
+    # as the wire format while staying comparable to plain strings. Switching
+    # to StrEnum changes str()/format() behaviour across three protocol types,
+    # so we keep the explicit form.
+    "UP042",
+]

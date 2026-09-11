@@ -1,0 +1,14 @@
+{
+    // VS Code will offer to install these when the workspace is opened.
+    "recommendations": [
+        // Python language support + the built-in debugger that .vscode/launch.json
+        // targets ("type": "debugpy"). debugpy ships as a dependency of
+        // ms-python.python but is listed explicitly so the requirement is visible.
+        "ms-python.python",
+        "ms-python.debugpy",
+        "ms-python.vscode-pylance",
+        // Test Explorer integration for the pytest suite (see .vscode/settings.json).
+        "ms-python.pytest",
+        "charliermarsh.ruff"
+    ]
+}

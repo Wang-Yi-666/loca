@@ -1,0 +1,43 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment files (never commit secrets)
+.env
+
+# IDE / editor
+.idea/
+# Keep the editor settings that make the project runnable out of the box
+# (pytest discovery, interpreter, formatter) while ignoring local state.
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+*.swp
+
+# Scratch workspace the CLI operates in (see .vscode/launch.json)
+playground/
+
+# Assistant-authored dev notes (local only, not part of the project)
+.workbuddy/
+
+# Test / coverage
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db

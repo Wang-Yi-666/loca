@@ -1,0 +1,32 @@
+{
+    // Use the project's local virtualenv for everything Python.
+    "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+
+    // Tell VS Code to use pytest (not unittest) for test discovery.
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestPath": "${workspaceFolder}\\.venv\\Scripts\\pytest.exe",
+    "python.testing.autoTestDiscoverOnSaveEnabled": true,
+
+    // Lint with ruff (installed as a dev dep).
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.fixAll": "explicit",
+            "source.organizeImports": "explicit"
+        }
+    },
+
+    // Files & search.
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/.pytest_cache": true,
+        "**/*.egg-info": true
+    },
+
+    // Don't fight the project .env loader — show .env in the explorer.
+    "files.associations": {
+        ".env": "dotenv"
+    }
+}
