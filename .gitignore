@@ -32,6 +32,9 @@ playground/
 # Assistant-authored dev notes (local only, not part of the project)
 .workbuddy/
 
+# Session databases (the default lives in ~/.loca; this catches --db .loca/...)
+.loca/
+
 # Test / coverage
 .pytest_cache/
 .ruff_cache/

@@ -187,6 +187,20 @@ D:\Projects\loca\playground\playground\hello.py
 - **默认配置直接用项目根**，你说"读 README.md"就是项目里的 README.md，不会有歧义
 - 沙箱模式仍然保留，但要注意：**在沙箱模式下说文件名就直接说 `hello.py`，别说 `playground/hello.py`**
 
+### 再记一条：`--workspace` 只能写 Windows 路径
+
+loca **只跑 Windows**（shell 固定是 cmd.exe，点这里看 [运行环境](../README.md#运行环境)），所以工作目录要写 Windows 路径：
+
+```
+✅  --workspace D:\some\repo
+✅  --workspace "D:\some repo with spaces\"
+❌  --workspace /d/some/repo
+```
+
+最后那种 Git-Bash 写法现在会被**直接拒绝**，并告诉你怎么改。原因是它属于"不报错、但结果全错"：Windows 的路径解析会把 `/d/repo` 当成**盘符相对路径**，也就是"当前盘符下的 `d\repo` 目录"，于是它悄悄变成 `D:\d\repo` —— 一个空目录。你的仓库一点没被改，模型却言之凿凿地说它干完了。
+
+路径里有空格时，在 cmd.exe 里要用双引号把整个参数包起来。
+
 ---
 
 ## 六、常用参数
@@ -217,6 +231,7 @@ D:\Projects\loca\playground\playground\hello.py
 | 下拉框里没有 loca 的配置 | 调试器扩展没装 | 装 VS Code 推荐的 `ms-python.python` 和 `ms-python.debugpy` |
 | 打字没反应 / 打不进去 | 终端没获得键盘焦点 | 用鼠标点一下终端区域再打 |
 | 它说"路径不在工作区内" | 路径沙箱拦截 | 正常行为。要么把文件放到工作目录里，要么用 `--workspace` 重新指定 |
+| 它说 `--workspace` 看起来像 Git-Bash 路径 | 你写成了 `/d/repo` | 改成 `D:\repo`。见第五节 |
 | 每问一句都要重新自我介绍 | 正常，但多轮是保留上下文的 | `loop.last_transcript` 会回灌，所以它能记住这一局聊过什么。退出后不保存（持久化在 Week 4 做） |
 | 输出里出现 `error: ...` | 调用模型失败或重试耗尽 | 看完整报错；常见是 key 无效或网络不通 |
 
