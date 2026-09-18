@@ -6,8 +6,11 @@ SSE stream. Each event is one of:
 - ``{"type": "text", "content": "..."}``            streaming text
 - ``{"type": "tool_call", "name": "...", "args": {...}}``
 - ``{"type": "tool_result", "name": "...", "content": "...", "is_error": bool}``
+- ``{"type": "checkpoint", "step": N, "tool": "...", "files": [...], "restorable": bool}``
 - ``{"type": "usage", "prompt": N, "completion": N, "total": N}``
 - ``{"type": "context_trimmed", "dropped": N, "estimated_tokens": N, "budget": N}``
+- ``{"type": "context_summarized", "summarized": N, "summary_tokens": N,
+  "estimated_tokens": N, "budget": N}``
 - ``{"type": "recovery", "reason": "length", "step": N}``
 - ``{"type": "done", "reason": "stop|max_steps", "steps": N, "total_tokens": N}``
 - ``{"type": "error", "message": "...", "retryable": bool}``
@@ -32,7 +35,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from loca.core.events import EventType
+from loca.core.events import AgentEvent, EventType
 from loca.core.loop import AgentLoop
 from loca.providers import LLMProvider
 from loca.providers.registry import get_provider
@@ -118,92 +121,9 @@ async def chat(turn: ChatTurn) -> EventSourceResponse:
 
         try:
             for event in loop.run(ctx, user_message=turn.message, history=history):
-                if event.type is EventType.TEXT_DELTA:
-                    yield {
-                        "event": "message",
-                        "data": _json({"type": "text", "content": event.data["content"]}),
-                    }
-                elif event.type is EventType.TOOL_CALL:
-                    yield {
-                        "event": "message",
-                        "data": _json(
-                            {
-                                "type": "tool_call",
-                                "name": event.data["name"],
-                                "args": event.data["arguments"],
-                            }
-                        ),
-                    }
-                elif event.type is EventType.TOOL_RESULT:
-                    yield {
-                        "event": "message",
-                        "data": _json(
-                            {
-                                "type": "tool_result",
-                                "name": event.data["name"],
-                                "content": event.data["content"],
-                                "is_error": event.data["is_error"],
-                            }
-                        ),
-                    }
-                elif event.type is EventType.USAGE:
-                    yield {
-                        "event": "message",
-                        "data": _json(
-                            {
-                                "type": "usage",
-                                "prompt": event.data["prompt_tokens"],
-                                "completion": event.data["completion_tokens"],
-                                "total": event.data["total_tokens"],
-                            }
-                        ),
-                    }
-                elif event.type is EventType.CONTEXT_TRIMMED:
-                    yield {
-                        "event": "message",
-                        "data": _json(
-                            {
-                                "type": "context_trimmed",
-                                "dropped": event.data["dropped"],
-                                "estimated_tokens": event.data["estimated_tokens"],
-                                "budget": event.data["budget"],
-                            }
-                        ),
-                    }
-                elif event.type is EventType.RECOVERY:
-                    yield {
-                        "event": "message",
-                        "data": _json(
-                            {
-                                "type": "recovery",
-                                "reason": event.data["reason"],
-                                "step": event.data["step"],
-                            }
-                        ),
-                    }
-                elif event.type is EventType.ERROR:
-                    yield {
-                        "event": "message",
-                        "data": _json(
-                            {
-                                "type": "error",
-                                "message": event.data["message"],
-                                "retryable": event.data.get("retryable", False),
-                            }
-                        ),
-                    }
-                elif event.type is EventType.DONE:
-                    yield {
-                        "event": "message",
-                        "data": _json(
-                            {
-                                "type": "done",
-                                "reason": event.data["reason"],
-                                "steps": event.data["steps"],
-                                "total_tokens": event.data["total_tokens"],
-                            }
-                        ),
-                    }
+                payload = _serialize_event(event)
+                if payload is not None:
+                    yield {"event": "message", "data": _json(payload)}
         except Exception as exc:  # pragma: no cover - defensive
             yield {
                 "event": "message",
@@ -211,6 +131,74 @@ async def chat(turn: ChatTurn) -> EventSourceResponse:
             }
 
     return EventSourceResponse(event_source())
+
+
+def _serialize_event(event: AgentEvent) -> dict | None:
+    """Map a loop event onto the payload shape the browser expects.
+
+    Returns ``None`` for events the UI has nothing to render (``step_start``).
+    Kept out of the async generator so it can be unit-tested on its own.
+    """
+    data = event.data
+    kind = event.type
+
+    if kind is EventType.TEXT_DELTA:
+        return {"type": "text", "content": data["content"]}
+    if kind is EventType.TOOL_CALL:
+        return {"type": "tool_call", "name": data["name"], "args": data["arguments"]}
+    if kind is EventType.TOOL_RESULT:
+        return {
+            "type": "tool_result",
+            "name": data["name"],
+            "content": data["content"],
+            "is_error": data["is_error"],
+        }
+    if kind is EventType.CHECKPOINT:
+        return {
+            "type": "checkpoint",
+            "step": data["step"],
+            "tool": data["tool"],
+            "files": data["files"],
+            "restorable": data.get("restorable", True),
+        }
+    if kind is EventType.USAGE:
+        return {
+            "type": "usage",
+            "prompt": data["prompt_tokens"],
+            "completion": data["completion_tokens"],
+            "total": data["total_tokens"],
+        }
+    if kind is EventType.CONTEXT_TRIMMED:
+        return {
+            "type": "context_trimmed",
+            "dropped": data["dropped"],
+            "estimated_tokens": data["estimated_tokens"],
+            "budget": data["budget"],
+        }
+    if kind is EventType.CONTEXT_SUMMARIZED:
+        return {
+            "type": "context_summarized",
+            "summarized": data["summarized"],
+            "summary_tokens": data["summary_tokens"],
+            "estimated_tokens": data["estimated_tokens"],
+            "budget": data["budget"],
+        }
+    if kind is EventType.RECOVERY:
+        return {"type": "recovery", "reason": data["reason"], "step": data["step"]}
+    if kind is EventType.ERROR:
+        return {
+            "type": "error",
+            "message": data["message"],
+            "retryable": data.get("retryable", False),
+        }
+    if kind is EventType.DONE:
+        return {
+            "type": "done",
+            "reason": data["reason"],
+            "steps": data["steps"],
+            "total_tokens": data["total_tokens"],
+        }
+    return None
 
 
 def _json(obj: dict) -> str:

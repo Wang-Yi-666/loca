@@ -1,6 +1,6 @@
 """Tool registry.
 
-Week-1 placeholder. Concrete tools (filesystem / bash) land in Week 2.
+Week-1 placeholder. Concrete tools (filesystem / shell) land in Week 2.
 """
 
 from __future__ import annotations

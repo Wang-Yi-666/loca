@@ -1,7 +1,12 @@
-"""Bash tool: execute shell commands.
+"""Shell tool: execute command lines through Windows ``cmd.exe``.
 
-Unlike filesystem tools, bash is *not* sandboxed to the workspace — the model
-is expected to run ``git``, ``pip``, ``pytest`` and other commands that
+loca targets **Windows only**. Commands are handed to ``cmd.exe`` and every
+path the agent sees or produces is a Windows path (``D:\\repo``, not
+``/d/repo``). There is deliberately no POSIX/macOS branch: if a command needs
+``ls``, write ``dir``.
+
+Unlike filesystem tools, the shell is *not* sandboxed to the workspace — the
+model is expected to run ``git``, ``pip``, ``pytest`` and other commands that
 live elsewhere. Safety comes from showing the command, the working directory,
 and a clear exit code so the operator can see what the agent did.
 """
@@ -10,9 +15,9 @@ from __future__ import annotations
 
 import locale
 import os
-import shlex
 import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 from loca.tools.base import Tool, ToolContext, ToolResult
@@ -51,22 +56,51 @@ def _decode(data: bytes) -> str:
         return data.decode("utf-8", errors="replace")
 
 
-class BashTool(Tool):
-    """Execute a shell command and return stdout / stderr / exit code."""
+def _format_command(command: str) -> str:
+    """Render a command for the transcript header using cmd.exe quoting.
 
-    name = "bash"
+    ``shlex.quote`` produces POSIX single-quoting (``'dir /b'``), which is not
+    how cmd.exe reads a line. cmd.exe has no real escape character, so the
+    convention is to wrap the whole line in double quotes and double any
+    embedded quotes. This is for display only — ``subprocess`` receives the
+    raw string.
+    """
+    return '"' + command.replace('"', '""') + '"'
+
+
+def _shell_executable() -> str:
+    """The shell every command runs through: always cmd.exe, never anything else.
+
+    ``shell=True`` resolves the interpreter from ``%COMSPEC%``. We pin it so a
+    COMSPEC someone pointed at PowerShell or Git-Bash cannot silently change the
+    command language the model is told to write. A non-``cmd.exe`` COMSPEC is
+    ignored in favour of ``cmd.exe`` found on PATH.
+    """
+    comspec = os.environ.get("COMSPEC")
+    if comspec and Path(comspec).stem.lower() == "cmd":
+        return comspec
+    return "cmd.exe"
+
+
+class ShellTool(Tool):
+    """Execute a command line through cmd.exe and return stdout / stderr / code."""
+
+    name = "shell"
     description = (
-        "Execute a shell command (POSIX sh on Unix, cmd.exe on Windows) and "
-        "return its combined output. By default the working directory is the "
-        "workspace and the timeout is 30s. Long output is truncated. Use "
-        "this to run tests, install packages, or invoke other CLIs."
+        "Run a command line through the Windows command interpreter "
+        "(cmd.exe) and return its combined output. Use Windows commands "
+        "(dir, type, copy, del, findstr, ...) and Windows paths "
+        "(D:\\Projects\\repo) — this is not a POSIX shell, so ls/cat/rm will "
+        "not work. By default the working directory is the workspace and the "
+        "timeout is 30s. Long output is truncated. Use this to run tests, "
+        "install packages, or invoke other CLIs."
     )
     input_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
             "command": {
                 "type": "string",
-                "description": "The shell command to run.",
+                "description": "The cmd.exe command line to run.",
             },
             "timeout": {
                 "type": "integer",
@@ -77,8 +111,8 @@ class BashTool(Tool):
             "cwd": {
                 "type": "string",
                 "description": (
-                    "Working directory for the command. Defaults to the "
-                    "workspace. Must be inside the workspace."
+                    "Working directory for the command, as a Windows path. "
+                    "Defaults to the workspace. Must be inside the workspace."
                 ),
             },
         },
@@ -115,12 +149,15 @@ class BashTool(Tool):
 
         start = time.monotonic()
         try:
-            # Byte capture: child processes on Windows emit text in the ANSI
-            # codepage (e.g. cp936), not UTF-8, so text=True would crash the
-            # reader thread on any localized cmd.exe message.
+            # Windows-only: shell=True hands the line to cmd.exe; `executable`
+            # pins it so %COMSPEC% can't swap in a different interpreter.
+            # Byte capture: cmd.exe and other console programs emit text in the
+            # ANSI codepage (e.g. cp936), not UTF-8, so text=True would crash
+            # the reader thread on any localized message.
             completed = subprocess.run(
                 command,
                 shell=True,
+                executable=_shell_executable(),
                 cwd=str(cwd_path),
                 capture_output=True,
                 timeout=timeout,
@@ -145,7 +182,7 @@ class BashTool(Tool):
         exit_code = completed.returncode
 
         parts = [
-            f"<bash command={shlex.quote(command)!s} cwd={cwd_path} "
+            f"<shell command={_format_command(command)} cwd={cwd_path} "
             f"exit_code={exit_code} elapsed={elapsed:.2f}s timeout={timeout}s>"
         ]
         if stdout:

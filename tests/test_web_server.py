@@ -202,3 +202,49 @@ def test_chat_forwards_multi_turn_history(
         "first answer",
         "and then?",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Week 4: the new event types must reach the browser
+# ---------------------------------------------------------------------------
+
+
+def test_serialize_event_maps_checkpoint_and_summary() -> None:
+    from loca.core.events import AgentEvent, EventType
+
+    checkpoint = server._serialize_event(
+        AgentEvent(
+            type=EventType.CHECKPOINT,
+            data={"step": 3, "tool": "write_file", "files": ["a.py"], "restorable": True},
+        )
+    )
+    assert checkpoint == {
+        "type": "checkpoint",
+        "step": 3,
+        "tool": "write_file",
+        "files": ["a.py"],
+        "restorable": True,
+    }
+
+    summarized = server._serialize_event(
+        AgentEvent(
+            type=EventType.CONTEXT_SUMMARIZED,
+            data={
+                "summarized": 8,
+                "dropped": 8,
+                "summary_tokens": 120,
+                "estimated_tokens": 900,
+                "budget": 800,
+            },
+        )
+    )
+    assert summarized is not None
+    assert summarized["type"] == "context_summarized"
+    assert summarized["summarized"] == 8
+    assert summarized["summary_tokens"] == 120
+
+
+def test_serialize_event_ignores_step_start() -> None:
+    from loca.core.events import AgentEvent, EventType
+
+    assert server._serialize_event(AgentEvent(type=EventType.STEP_START, data={"step": 0})) is None

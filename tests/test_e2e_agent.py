@@ -69,9 +69,9 @@ def test_deepseek_uses_read_file_through_loop(tmp_path: Path) -> None:
     assert "loca-rocks-2026" in text
 
 
-def test_deepseek_uses_bash_through_loop(tmp_path: Path) -> None:
-    """Week-2 acceptance: DeepSeek calls ``bash`` and sees ``echo hello``."""
-    ctx = ToolContext(workspace=tmp_path, session_id="e2e-bash", step_index=0)
+def test_deepseek_uses_shell_through_loop(tmp_path: Path) -> None:
+    """Week-2 acceptance: DeepSeek calls ``shell`` and sees ``echo hello``."""
+    ctx = ToolContext(workspace=tmp_path, session_id="e2e-shell", step_index=0)
 
     register_default_tools()
     provider = get_provider("deepseek")
@@ -81,7 +81,7 @@ def test_deepseek_uses_bash_through_loop(tmp_path: Path) -> None:
         loop.run(
             ctx,
             user_message=(
-                'Use the bash tool to run: echo hello. Then quote the exact '
+                'Use the shell tool to run: echo hello. Then quote the exact '
                 'command output in your reply.'
             ),
         )
@@ -91,20 +91,20 @@ def test_deepseek_uses_bash_through_loop(tmp_path: Path) -> None:
     assert EventType.DONE in types, "loop should reach DONE"
 
     tool_calls = [e for e in events if e.type == EventType.TOOL_CALL]
-    bash_calls = [c for c in tool_calls if c.data["name"] == "bash"]
-    assert bash_calls, f"expected bash call, got {[c.data['name'] for c in tool_calls]}"
+    shell_calls = [c for c in tool_calls if c.data["name"] == "shell"]
+    assert shell_calls, f"expected shell call, got {[c.data['name'] for c in tool_calls]}"
     # The assembled arguments must actually carry the command (regression:
     # the stream assembler used to flush calls before argument fragments
     # arrived, so every call reached the loop as ``{}``).
-    assert "echo" in bash_calls[0].data["arguments"].get("command", "")
+    assert "echo" in shell_calls[0].data["arguments"].get("command", "")
 
-    bash_results = [
-        r for r in events if r.type == EventType.TOOL_RESULT and r.data["name"] == "bash"
+    shell_results = [
+        r for r in events if r.type == EventType.TOOL_RESULT and r.data["name"] == "shell"
     ]
-    assert bash_results
-    assert not bash_results[0].data["is_error"]
-    assert "hello" in bash_results[0].data["content"]
-    assert "exit_code=0" in bash_results[0].data["content"]
+    assert shell_results
+    assert not shell_results[0].data["is_error"]
+    assert "hello" in shell_results[0].data["content"]
+    assert "exit_code=0" in shell_results[0].data["content"]
 
     # Final reply should reflect the command output.
     text = "".join(
@@ -117,7 +117,7 @@ def test_deepseek_writes_and_runs_a_script(tmp_path: Path) -> None:
     """Week-3 acceptance: a real multi-step task.
 
     The model has to (1) author a file with ``write_file`` and (2) execute it
-    with ``bash``. Step two only makes sense if step one actually landed on
+    with ``shell``. Step two only makes sense if step one actually landed on
     disk, so this exercises the whole tool loop rather than a single call.
     """
     ctx = ToolContext(workspace=tmp_path, session_id="e2e-script", step_index=0)
@@ -133,7 +133,7 @@ def test_deepseek_writes_and_runs_a_script(tmp_path: Path) -> None:
                 "Do these two steps in order. "
                 "1) Use the write_file tool to create a file named greet.py "
                 "whose contents are exactly: print('loca-week3')  "
-                "2) Use the bash tool to run: python greet.py  "
+                "2) Use the shell tool to run: python greet.py  "
                 "Then quote the exact stdout in one short sentence."
             ),
         )
@@ -147,7 +147,7 @@ def test_deepseek_writes_and_runs_a_script(tmp_path: Path) -> None:
     tool_calls = [e for e in events if e.type == EventType.TOOL_CALL]
     names = [c.data["name"] for c in tool_calls]
     assert "write_file" in names, f"expected a write_file call, got {names}"
-    assert "bash" in names, f"expected a bash call, got {names}"
+    assert "shell" in names, f"expected a shell call, got {names}"
 
     # Step 1 really wrote the file the model claimed to write.
     script = tmp_path / "greet.py"
@@ -162,17 +162,17 @@ def test_deepseek_writes_and_runs_a_script(tmp_path: Path) -> None:
     assert write_results and not write_results[0].data["is_error"]
 
     # Step 2 executed it, cwd defaulting to the workspace.
-    bash_calls = [c for c in tool_calls if c.data["name"] == "bash"]
-    command = bash_calls[-1].data["arguments"].get("command", "")
-    assert "greet.py" in command, f"bash should run the script, got {command!r}"
+    shell_calls = [c for c in tool_calls if c.data["name"] == "shell"]
+    command = shell_calls[-1].data["arguments"].get("command", "")
+    assert "greet.py" in command, f"shell should run the script, got {command!r}"
 
-    bash_results = [
-        r for r in events if r.type == EventType.TOOL_RESULT and r.data["name"] == "bash"
+    shell_results = [
+        r for r in events if r.type == EventType.TOOL_RESULT and r.data["name"] == "shell"
     ]
-    assert bash_results, "bash produced no result"
-    assert not bash_results[-1].data["is_error"], bash_results[-1].data["content"]
-    assert "loca-week3" in bash_results[-1].data["content"]
-    assert "exit_code=0" in bash_results[-1].data["content"]
+    assert shell_results, "shell produced no result"
+    assert not shell_results[-1].data["is_error"], shell_results[-1].data["content"]
+    assert "loca-week3" in shell_results[-1].data["content"]
+    assert "exit_code=0" in shell_results[-1].data["content"]
 
     text = "".join(e.data["content"] for e in events if e.type == EventType.TEXT_DELTA)
     assert "loca-week3" in text

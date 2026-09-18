@@ -17,13 +17,13 @@ __all__ = ["Tool", "ToolContext", "ToolResult"]
 
 
 def register_default_tools() -> None:
-    """Register the four built-in tools: read_file, write_file, edit_file, bash.
+    """Register the four built-in tools: read_file, write_file, edit_file, shell.
 
     Safe to call multiple times — registration is idempotent.
     """
-    from loca.tools.bash import BashTool
     from loca.tools.filesystem import EditFileTool, ReadFileTool, WriteFileTool
     from loca.tools.registry import register
+    from loca.tools.shell import ShellTool
 
-    for tool in (ReadFileTool(), WriteFileTool(), EditFileTool(), BashTool()):
+    for tool in (ReadFileTool(), WriteFileTool(), EditFileTool(), ShellTool()):
         register(tool)

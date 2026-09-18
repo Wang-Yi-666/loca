@@ -333,6 +333,10 @@ async function send() {
       history.push({ role: "assistant", content: acc });
     } else if (evt.type === "context_trimmed") {
       appendNote(`context trimmed · dropped ${evt.dropped} old message(s) · ~${evt.estimated_tokens}/${evt.budget} tokens`);
+    } else if (evt.type === "context_summarized") {
+      appendNote(`context compacted · ${evt.summarized} old message(s) folded into a summary (~${evt.summary_tokens} tokens) · ~${evt.estimated_tokens}/${evt.budget} tokens`);
+    } else if (evt.type === "checkpoint") {
+      appendNote(`⛁ checkpoint @ step ${evt.step} · ${(evt.files || []).join(", ") || "nothing"}${evt.restorable ? "" : " (not restorable)"}`);
     } else if (evt.type === "recovery") {
       appendNote(`recovering · ${evt.reason} · asking the model to continue`);
     } else if (evt.type === "error") {

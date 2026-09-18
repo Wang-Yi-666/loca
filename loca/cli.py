@@ -3,18 +3,36 @@
     loca chat          interactive agent REPL (tools enabled)
     loca chat --no-tools
                        plain streaming chat, no tool use
+    loca chat --session <id>
+                       resume a stored session (or start one with that id)
+    loca sessions      list stored sessions
+    loca sessions show <id>
+                       print a stored transcript
+    loca sessions rm <id>
+                       delete a session and its checkpoints
+    loca rollback <session> <step>
+                       undo file edits from <step> onwards
+    loca report [<session>]
+                       render a session's per-step trace (--verbose, --json)
+    loca bench [list|run|verify]
+                       list the eval task set / benchmark a provider /
+                       check the task set against its reference answers
     loca serve         run the web UI
     loca tools         list the registered tools
     loca providers     show which providers have credentials
 
 The REPL drives the real :class:`~loca.core.loop.AgentLoop`, so tool calls,
-retries, context trims and errors are all visible as they happen.
+retries, context compaction and errors are all visible as they happen. Turns are
+persisted to a SQLite session database (``~/.loca/sessions.db`` by default) and
+file edits are checkpointed before they happen, which is what makes ``--session``
+and ``rollback`` possible.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -43,6 +61,32 @@ def load_env() -> None:
     load_dotenv(Path.cwd() / ".env")
 
 
+#: ``/d/repo`` or ``/c`` — a Git-Bash/MSYS-style path, never valid on Windows.
+_MSYS_PATH = re.compile(r"^/([A-Za-z])(?:/|$)")
+
+
+def resolve_workspace(raw: str) -> Path:
+    """Turn a ``--workspace`` value into an absolute Windows path.
+
+    loca is Windows-only, so ``--workspace`` must be a Windows path
+    (``D:\\Projects\\repo``). A Git-Bash path like ``/d/repo`` is worse than
+    obviously wrong: ``ntpath`` reads it as *drive-relative*, so it silently
+    resolves to ``D:\\d\\repo`` — an empty directory. The model would then work
+    in a phantom workspace while the operator stares at an untouched repo. We
+    reject the shape instead of guessing.
+    """
+    match = _MSYS_PATH.match(raw)
+    if match:
+        drive = match.group(1).upper()
+        tail = raw[3:].replace("/", "\\")
+        suggestion = f"{drive}:\\{tail}" if tail else f"{drive}:\\"
+        raise ValueError(
+            f"--workspace {raw!r} looks like a Git-Bash path. loca is "
+            f"Windows-only — pass a Windows path instead, e.g. {suggestion}"
+        )
+    return Path(raw).expanduser().resolve()
+
+
 def _console() -> Any:
     from rich.console import Console
 
@@ -62,17 +106,22 @@ def run_turn(
     *,
     history: list[Any] | None = None,
     verbose_tools: bool = True,
+    recorder: Any = None,
 ) -> str:
     """Consume one agent turn, render it, and return the assistant's text.
 
     Kept as a free function (not buried in the REPL loop) so it can be tested
-    with a scripted provider and a StringIO console.
+    with a scripted provider and a StringIO console. ``recorder`` is an optional
+    :class:`~loca.observability.trace.TraceRecorder` that observes every event;
+    passing ``None`` means no tracing, which is what ``--no-trace`` does.
     """
     text_parts: list[str] = []
     usage: dict[str, int] | None = None
     done: dict[str, Any] | None = None
 
     for event in loop.run(ctx, user_message=user_message, history=history):
+        if recorder is not None:
+            recorder.observe(event)
         kind = event.type
 
         if kind is EventType.TEXT_DELTA:
@@ -97,6 +146,19 @@ def run_turn(
                 f"[yellow]context trimmed: dropped {event.data['dropped']} old "
                 f"message(s), ~{event.data['estimated_tokens']}/"
                 f"{event.data['budget']} tokens[/yellow]"
+            )
+
+        elif kind is EventType.CONTEXT_SUMMARIZED:
+            console.print(
+                f"[yellow]context compacted: {event.data['summarized']} old "
+                f"message(s) → summary (~{event.data['summary_tokens']} tokens), "
+                f"now ~{event.data['estimated_tokens']}/{event.data['budget']}[/yellow]"
+            )
+
+        elif kind is EventType.CHECKPOINT and verbose_tools:
+            files = ", ".join(event.data["files"]) or "(nothing)"
+            console.print(
+                f"[dim]⛁ checkpoint @ step {event.data['step']} · {files}[/dim]"
             )
 
         elif kind is EventType.USAGE:
@@ -145,6 +207,8 @@ def _first_lines(text: str, n: int) -> str:
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
+    from loca.core.context import ContextManager, provider_summarizer
+    from loca.observability import CheckpointManager, SessionStore, TraceRecorder, new_session_id
     from loca.providers.registry import get_provider
     from loca.tools import register_default_tools
 
@@ -167,52 +231,384 @@ def cmd_chat(args: argparse.Namespace) -> int:
 
         tools = list(all_tools())
 
-    workspace = Path(args.workspace).expanduser().resolve()
+    try:
+        workspace = resolve_workspace(args.workspace)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 2
     workspace.mkdir(parents=True, exist_ok=True)
+
+    # ---- session ----------------------------------------------------------
+    store: SessionStore | None = None
+    session_id = args.session
+    history: list[Any] = []
+    resumed = False
+    if not args.no_save:
+        store = SessionStore(args.db)
+        session_id = session_id or new_session_id()
+        _, created = store.ensure_session(
+            session_id,
+            workspace=workspace,
+            provider=provider.name,
+            model=args.model,
+        )
+        resumed = not created
+        if resumed:
+            history = store.load_messages(session_id)
 
     loop = AgentLoop(
         provider=provider,
         tools=tools,
         max_steps=args.max_steps,
-        context_token_budget=args.token_budget,
+        # The context manager (below) takes over budgeting when present; keep
+        # the loop's own trim path off so there is a single policy in charge.
+        context_token_budget=None,
         system_prompt=args.system,
+        checkpoint_manager=CheckpointManager(store) if store and tools else None,
     )
-    ctx = ToolContext(workspace=workspace, session_id="cli", step_index=0)
+
+    if args.token_budget > 0:
+        loop.context_manager = ContextManager(
+            budget=args.token_budget,
+            keep_recent=args.keep_recent,
+            model=args.model,
+            # Summarize with the loop's provider, so a compaction call gets the
+            # same retry policy as everything else.
+            summarizer=provider_summarizer(loop.provider, model=args.model)
+            if args.summarize
+            else None,
+        )
+
+    ctx = ToolContext(
+        workspace=workspace,
+        session_id=session_id or "cli",
+        # Resume the session-wide step counter, so checkpoint steps (and thus
+        # `loca rollback <session> <step>`) stay unambiguous across restarts.
+        step_index=store.next_step(session_id) if store and session_id else 0,
+    )
+
+    # Trace every model step. The recorder samples the loop's live transcript on
+    # the first event of each step, which is the prompt that actually went out.
+    recorder: TraceRecorder | None = None
+    if store is not None and session_id is not None and args.trace:
+        recorder = TraceRecorder(
+            session_id,
+            store=store,
+            provider=provider.name,
+            model=args.model,
+            prompt_source=lambda: loop.last_transcript,
+        )
 
     console.print(
         f"[bold cyan]loca[/bold cyan] · provider [cyan]{provider.name}[/cyan] · "
         f"{len(tools)} tool(s) · workspace [dim]{workspace}[/dim]"
     )
-    console.print("[dim]Type 'exit' or Ctrl-C to quit.[/dim]")
+    if store is not None:
+        counted = len(history)
+        state = f"resumed, {counted} message(s)" if resumed else "new"
+        console.print(f"session [cyan]{session_id}[/cyan] ({state}) · db [dim]{store.path}[/dim]")
+        if recorder is not None:
+            console.print(f"[dim]tracing to {recorder.jsonl_path}[/dim]")
+    else:
+        console.print("[dim]session persistence off (--no-save)[/dim]")
+    console.print("[dim]Type 'exit' to quit · /help for commands.[/dim]")
 
-    while True:
-        try:
-            console.print()
-            user_input = _ask(console)
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[dim]bye[/dim]")
-            return 0
+    try:
+        while True:
+            try:
+                console.print()
+                user_input = _ask(console)
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[dim]bye[/dim]")
+                return 0
 
-        text = user_input.strip()
-        if not text:
-            continue
-        if text.lower() in {"exit", "quit", ":q"}:
-            console.print("[dim]bye[/dim]")
-            return 0
+            text = user_input.strip()
+            if not text:
+                continue
+            if text.lower() in {"exit", "quit", ":q"}:
+                console.print("[dim]bye[/dim]")
+                return 0
+            if text.startswith("/"):
+                _handle_repl_command(
+                    text, console, loop=loop, store=store, session_id=session_id
+                )
+                continue
 
-        console.print("[bold magenta]assistant[/bold magenta] ", end="")
-        try:
-            # Feed the previous transcript back so the REPL is multi-turn.
-            run_turn(
-                loop,
-                ctx,
-                text,
-                console,
-                history=list(loop.last_transcript) or None,
+            console.print("[bold magenta]assistant[/bold magenta] ", end="")
+            try:
+                # Feed the previous transcript back so the REPL is multi-turn.
+                run_turn(
+                    loop,
+                    ctx,
+                    text,
+                    console,
+                    history=list(loop.last_transcript) or history or None,
+                    recorder=recorder,
+                )
+            except KeyboardInterrupt:
+                console.print("\n[yellow](interrupted)[/yellow]")
+
+            # Persist after every turn: the session on disk always reflects what
+            # the model actually saw, including any context compaction that
+            # happened.
+            if store is not None and session_id is not None:
+                store.set_next_step(session_id, ctx.step_index)
+                if loop.last_transcript:
+                    store.save_transcript(session_id, loop.last_transcript)
+                    history = list(loop.last_transcript)
+    finally:
+        # Finalize a step that was still in flight (Ctrl-C mid-stream), so the
+        # trace on disk is never silently missing its last entry.
+        if recorder is not None:
+            recorder.close()
+        _close(store)
+
+
+def _close(store: Any) -> None:
+    if store is not None:
+        store.close()
+
+
+def _handle_repl_command(
+    text: str,
+    console: Any,
+    *,
+    loop: AgentLoop | None = None,
+    store: Any = None,
+    session_id: str | None = None,
+) -> bool:
+    """Handle a ``/command`` inside the REPL. Returns ``True`` if recognised."""
+    command, _, rest = text.partition(" ")
+    command = command.lower()
+
+    if command in {"/help", "/?"}:
+        console.print(
+            "[dim]/compact[/dim]   summarize earlier turns now\n"
+            "[dim]/session[/dim]   show the session id, db and message count\n"
+            "[dim]/trace[/dim]     show how many steps have been traced so far\n"
+            "[dim]/help[/dim]      this message\n"
+            "[dim]exit[/dim]       quit (also: quit, :q, Ctrl-C)"
+        )
+        return True
+
+    if command == "/trace":
+        if store is None or session_id is None:
+            console.print("[dim]no session (started with --no-save)[/dim]")
+        else:
+            count = store.count_traces(session_id)
+            console.print(
+                f"[cyan]{count}[/cyan] step(s) traced · "
+                f"read it with [dim]loca report {session_id}[/dim]"
             )
-        except KeyboardInterrupt:
-            console.print("\n[yellow](interrupted)[/yellow]")
-        ctx.step_index += 1
+        return True
+
+    if command == "/session":
+        if store is None or session_id is None:
+            console.print("[dim]no session (started with --no-save)[/dim]")
+        else:
+            count = len(loop.last_transcript) if loop and loop.last_transcript else 0
+            console.print(
+                f"[cyan]{session_id}[/cyan] · {count} message(s) in this turn · "
+                f"db [dim]{store.path}[/dim]"
+            )
+        return True
+
+    if command == "/compact":
+        if loop is None or loop.context_manager is None:
+            console.print("[dim]context management is off (--token-budget 0)[/dim]")
+            return True
+        if not loop.last_transcript:
+            console.print("[dim]nothing to compact yet[/dim]")
+            return True
+        if loop.compact():
+            console.print("[yellow]compacted: earlier turns folded into a summary[/yellow]")
+            if store is not None and session_id is not None:
+                store.save_transcript(session_id, loop.last_transcript)
+        else:
+            console.print("[dim]nothing to compact (history is already short)[/dim]")
+        return True
+
+    console.print(f"[dim]unknown command {command!r} — try /help[/dim]")
+    _ = rest
+    return True
+
+
+def cmd_sessions(args: argparse.Namespace) -> int:
+    """``loca sessions [list|show|rm] [session_id]``."""
+    from loca.observability import SessionStore
+
+    action = args.action or "list"
+    with SessionStore(args.db) as store:
+        if action == "list":
+            return _list_sessions(store, args.limit)
+        if not args.session_id:
+            print(f"loca sessions {action}: needs a session id")
+            return 2
+        if action == "show":
+            return _show_session(store, args.session_id)
+        if action == "rm":
+            return _delete_session(store, args.session_id)
+    return 0
+
+
+def _list_sessions(store: Any, limit: int) -> int:
+    sessions = store.list_sessions(limit=limit)
+    if not sessions:
+        print(f"no sessions yet in {store.path}")
+        return 0
+    print(f"{'session':<24} {'updated (UTC)':<20} {'msgs':>4}  title")
+    for info in sessions:
+        title = info.display_title
+        if len(title) > 48:
+            title = title[:47] + "…"
+        print(
+            f"{info.session_id:<24} {info.updated_at[:19]:<20} "
+            f"{info.message_count:>4}  {title}"
+        )
+    print(f"\n{len(sessions)} session(s) · db {store.path}")
+    return 0
+
+
+def _show_session(store: Any, session_id: str) -> int:
+    info = store.get_session(session_id)
+    if info is None:
+        print(f"no such session: {session_id}")
+        return 1
+    print(f"session   {info.session_id}")
+    print(f"title     {info.display_title}")
+    print(f"workspace {info.workspace or '-'}")
+    print(f"provider  {info.provider or '-'} · model {info.model or '-'}")
+    print(f"created   {info.created_at} · updated {info.updated_at}")
+    print(f"messages  {info.message_count} · {info.next_step} model step(s) so far")
+    print("-" * 72)
+    for index, message in enumerate(store.load_messages(session_id)):
+        body = (message.content or "").strip().replace("\n", " ")
+        if len(body) > 200:
+            body = body[:199] + "…"
+        extra = ""
+        if message.tool_calls:
+            names = ", ".join(c.name for c in message.tool_calls)
+            extra = f" → {names}()"
+        if message.tool_call_id:
+            extra = " (tool result)"
+        print(f"[{index:>3}] {message.role.value:<9} {body}{extra}")
+
+    checkpoints = store.list_checkpoints(session_id)
+    if checkpoints:
+        print("-" * 72)
+        print("checkpoints (rollback target → files snapshotted before that step):")
+        for row in checkpoints:
+            print(f"  step {row.step:>3}  {row.tool or '-':<11} {row.created_at[:19]}")
+    return 0
+
+
+def _delete_session(store: Any, session_id: str) -> int:
+    info = store.get_session(session_id)
+    if info is None:
+        print(f"no such session: {session_id}")
+        return 1
+    traces = store.count_traces(session_id)
+    store.delete_session(session_id)
+    print(
+        f"deleted {session_id} ({info.message_count} message(s), "
+        f"{len(store.list_checkpoints(session_id))} checkpoint(s) removed, "
+        f"{traces} trace(s) removed)"
+    )
+    return 0
+
+
+def cmd_rollback(args: argparse.Namespace) -> int:
+    """``loca rollback <session_id> <step>`` — undo file edits from a step on."""
+    from loca.observability import CheckpointManager, SessionStore
+
+    try:
+        workspace = (
+            resolve_workspace(args.workspace) if args.workspace is not None else None
+        )
+    except ValueError as exc:
+        print(exc)
+        return 2
+
+    with SessionStore(args.db) as store:
+        if store.get_session(args.session_id) is None:
+            print(f"no such session: {args.session_id}")
+            return 1
+        manager = CheckpointManager(store)
+        report = manager.rollback(args.session_id, args.step, workspace=workspace)
+        if report.applied_checkpoints == 0:
+            print(
+                f"no checkpoints at step {args.step} or later in {args.session_id} "
+                "— nothing to undo"
+            )
+            return 0
+
+        settled = report.settled()
+        touched = 0
+        for path, action in settled.items():
+            if action == "restored":
+                print(f"restored {path}")
+                touched += 1
+            elif action == "deleted":
+                print(f"deleted  {path} (did not exist before that step)")
+                touched += 1
+            else:
+                print(f"skipped  {path}")
+        for path in report.skipped:
+            if path.split(" (", 1)[0] not in settled:
+                print(f"skipped  {path}")
+
+        print(
+            f"\n{report.applied_checkpoints} checkpoint(s) applied · "
+            f"{touched} file(s) affected"
+        )
+        if touched == 0:
+            print("(the workspace already matched the snapshots)")
+        print(
+            "note: only file-tool edits are checkpointed — changes made by the "
+            "shell tool cannot be rolled back"
+        )
+        return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """``loca report [<session_id>]`` — render a session's execution trace."""
+    from loca.observability import SessionStore
+    from loca.observability.reporter import gather, render, render_json
+
+    with SessionStore(args.db) as store:
+        session_id = args.session_id
+        if session_id is None:
+            recent = store.list_sessions(limit=1)
+            if not recent:
+                print("no sessions recorded yet — run `loca chat` first")
+                return 1
+            session_id = recent[0].session_id
+            # Diagnostic, not report content: keep stdout clean so
+            # `loca report --json | jq` stays valid.
+            print(
+                f"(no session given — reporting the most recent one: {session_id})",
+                file=sys.stderr,
+            )
+
+        data = gather(store, session_id)
+        if data.session is None and not data.steps:
+            print(f"no such session: {session_id}")
+            return 1
+
+        if args.json:
+            # Plain print (not the Rich console) so `--json` stays pipeable.
+            print(render_json(data))
+            return 0
+
+        render(
+            data,
+            _console(),
+            # `--limit 0` means "everything"; that is the default because a
+            # report you have to scroll is still better than a truncated one.
+            limit=None if args.limit <= 0 else args.limit,
+            verbose=args.verbose,
+        )
+        return 0
 
 
 def _ask(console: Any) -> str:
@@ -262,6 +658,230 @@ def cmd_providers(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bench(args: argparse.Namespace) -> int:
+    """``loca bench [list|run|verify]`` — the Week 6 evaluation harness."""
+    import json
+    import shutil
+    import tempfile
+
+    from rich.markup import escape as markup_escape
+    from rich.table import Table
+
+    from loca.eval import (
+        compare,
+        load_tasks,
+        render,
+        render_comparison,
+        render_json,
+        run_benchmark,
+        verify_task_set,
+    )
+    from loca.eval.report import render_comparison_json
+    from loca.providers.registry import get_provider
+    from loca.tools import register_default_tools
+
+    console = _console()
+    load_env()
+    register_default_tools()
+
+    tasks = load_tasks()
+    if not tasks:
+        console.print("[red]no tasks found[/red] — expected them under loca/eval/tasks/")
+        return 1
+
+    action = getattr(args, "action", "list") or "list"
+
+    if action == "list":
+        selected = tasks.select(ids=args.task, difficulties=args.difficulty, limit=args.limit)
+        if args.json:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "id": t.id,
+                            "title": t.title,
+                            "difficulty": t.difficulty,
+                            "tags": list(t.tags),
+                            "has_solution": t.has_solution,
+                        }
+                        for t in selected
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        table = Table(title=f"{len(selected)} task(s)", title_justify="left", header_style="bold")
+        table.add_column("id")
+        table.add_column("tier")
+        table.add_column("title")
+        table.add_column("tags")
+        for task in selected:
+            colour = {"simple": "green", "medium": "yellow", "hard": "red"}.get(
+                task.difficulty, "white"
+            )
+            table.add_row(
+                f"[bold]{markup_escape(task.id)}[/bold]",
+                f"[{colour}]{markup_escape(task.difficulty)}[/{colour}]",
+                markup_escape(task.title),
+                markup_escape(", ".join(task.tags)),
+            )
+        console.print(table)
+        counts = tasks.counts()
+        console.print(
+            "[dim]"
+            + " · ".join(f"{name} {count}" for name, count in counts.items())
+            + " · `loca bench verify` checks the task set, "
+            + "`loca bench run` runs it[/dim]"
+        )
+        return 0
+
+    if action == "verify":
+        workdir = Path(tempfile.mkdtemp(prefix="loca-bench-verify-"))
+        console.print(
+            "[dim]checking every task: seed must fail, reference solution must pass[/dim]"
+        )
+        report = verify_task_set(tasks, workdir=workdir, keep=args.keep)
+        if args.json:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "task_id": e.task_id,
+                            "difficulty": e.difficulty,
+                            "ok": e.ok,
+                            "fails_on_seed": e.fails_on_seed,
+                            "passes_with_solution": e.passes_with_solution,
+                        }
+                        for e in report
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        table = Table(title="task set integrity", title_justify="left", header_style="bold")
+        table.add_column("task")
+        table.add_column("tier")
+        table.add_column("fails on seed")
+        table.add_column("solution passes")
+        for entry in report:
+            table.add_row(
+                markup_escape(entry.task_id),
+                markup_escape(entry.difficulty),
+                _tick(entry.fails_on_seed),
+                "—" if entry.passes_with_solution is None else _tick(entry.passes_with_solution),
+            )
+        console.print(table)
+        broken = [e for e in report if not e.ok]
+        if broken:
+            console.print(f"[bold red]{len(broken)} task(s) are broken[/bold red]")
+            for entry in broken:
+                console.print(f"  [red]{markup_escape(entry.task_id)}[/red] {entry.error}")
+                if not entry.fails_on_seed:
+                    detail = markup_escape(entry.seed_detail[:200])
+                    console.print(f"    [dim]seed detail: {detail}[/dim]")
+                if entry.passes_with_solution is False:
+                    detail = markup_escape(entry.solution_detail[:200])
+                    console.print(f"    [dim]solution detail: {detail}[/dim]")
+            return 1
+        console.print(f"[green]all {len(report)} task(s) check out[/green]")
+        return 0
+
+    # ---- run --------------------------------------------------------------
+    selected = tasks.select(ids=args.task, difficulties=args.difficulty, limit=args.limit)
+    if not selected:
+        console.print("[red]no tasks matched the filters[/red]")
+        return 1
+
+    provider_names = [p.strip() for p in (args.compare or "").split(",") if p.strip()]
+    if not provider_names:
+        provider_names = [args.provider or ""]
+
+    workdir = Path(args.workdir) if args.workdir else Path(tempfile.mkdtemp(prefix="loca-bench-"))
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    reports = []
+    for name in provider_names:
+        label = name or os.environ.get("LOCA_DEFAULT_PROVIDER", "deepseek")
+
+        def factory(provider_name: str = label):
+            return get_provider(provider_name)
+
+        console.print(
+            f"[bold cyan]bench[/bold cyan] · provider [cyan]{label}[/cyan] · "
+            f"{len(selected)} task(s) × {args.attempts} attempt(s) · "
+            f"{args.workers} worker(s)"
+        )
+        total = len(selected) * args.attempts
+
+        def on_progress(done: int, total_count: int, result: Any) -> None:
+            mark = "✓" if result.passed else "✗"
+            colour = "green" if result.passed else "red"
+            console.print(
+                f"  [{colour}]{mark}[/{colour}] {markup_escape(result.task_id):<34} "
+                f"[dim]{markup_escape(result.outcome):<14} "
+                f"{result.steps:>2} step(s) {result.tokens:>6} tok "
+                f"{result.duration_s:>5.1f}s  ({done}/{total_count})[/dim]"
+            )
+
+        console.print(f"[dim]{total} attempt(s) queued[/dim]")
+
+        report = run_benchmark(
+            selected,
+            provider_factory=factory,
+            provider_name=label,
+            model=args.model,
+            attempts=args.attempts,
+            workers=args.workers,
+            max_steps=args.max_steps,
+            timeout_s=args.timeout,
+            workdir=workdir,
+            store_path=args.db,
+            trace=not args.no_trace,
+            keep=args.keep,
+            progress=on_progress,
+        )
+        reports.append(report)
+
+        if args.json and len(provider_names) == 1:
+            print(render_json(report))
+        elif len(provider_names) == 1:
+            console.print()
+            render(report, console, verbose=args.verbose)
+        else:
+            console.print(
+                f"  [dim]{report.provider}: {report.pass_at_1 * 100:.1f}% pass@1 "
+                f"({report.passed_attempts}/{report.total_attempts})[/dim]"
+            )
+
+        if args.out:
+            out = Path(args.out)
+            payload = render_json(report)
+            out.write_text(payload, encoding="utf-8")
+            console.print(f"[dim]wrote {out}[/dim]")
+
+    if len(reports) > 1:
+        rows = compare(reports)
+        console.print()
+        if args.json:
+            print(render_comparison_json(rows))
+        else:
+            render_comparison(rows, console)
+
+    if args.keep:
+        console.print(f"[dim]sandboxes kept in {workdir}[/dim]")
+    elif args.workdir is None:
+        # A temp dir we created ourselves is disposable; `run_benchmark` has
+        # already removed the sandboxes, this just clears the parent.
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    return 0
+
+
+def _tick(ok: bool) -> str:
+    return "[green]yes[/green]" if ok else "[bold red]no[/bold red]"
+
+
 # ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
@@ -277,7 +897,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="provider name (default: $LOCA_DEFAULT_PROVIDER)",
     )
-    chat.add_argument("--workspace", default=os.getcwd(), help="directory tools operate in")
+    chat.add_argument(
+        "--workspace",
+        default=os.getcwd(),
+        help="Windows path the tools operate in (default: current directory)",
+    )
     chat.add_argument("--max-steps", type=int, default=20)
     chat.add_argument("--token-budget", type=int, default=DEFAULT_TOKEN_BUDGET)
     chat.add_argument("--system", default=None, help="override the system prompt")
@@ -286,7 +910,152 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="plain chat: do not expose the filesystem/shell tools",
     )
-    chat.set_defaults(func=cmd_chat)
+    chat.add_argument(
+        "--session",
+        default=None,
+        help="resume this session id, or start one with that id (see `loca sessions`)",
+    )
+    chat.add_argument(
+        "--db",
+        default=None,
+        help="session database path (default: $LOCA_DB or ~/.loca/sessions.db)",
+    )
+    chat.add_argument(
+        "--no-save",
+        action="store_true",
+        help="do not persist the session and do not take checkpoints",
+    )
+    chat.add_argument(
+        "--model",
+        default=None,
+        help="model name, used for token counting and the summary call",
+    )
+    chat.add_argument(
+        "--keep-recent",
+        type=int,
+        default=6,
+        help="messages kept verbatim when the context is compacted",
+    )
+    chat.add_argument(
+        "--no-summarize",
+        dest="summarize",
+        action="store_false",
+        help="drop old turns instead of summarizing them when the context fills up",
+    )
+    chat.add_argument(
+        "--no-trace",
+        dest="trace",
+        action="store_false",
+        help="do not record a per-step trace (see `loca report`)",
+    )
+    chat.set_defaults(func=cmd_chat, summarize=True, trace=True)
+
+    sessions = sub.add_parser("sessions", help="list, inspect or delete stored sessions")
+    sessions.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "show", "rm"],
+        help="what to do (default: list)",
+    )
+    sessions.add_argument("session_id", nargs="?", default=None, help="target session id")
+    sessions.add_argument("--db", default=None, help="session database path")
+    sessions.add_argument("--limit", type=int, default=50, help="max sessions to list")
+    sessions.set_defaults(func=cmd_sessions)
+
+    rollback = sub.add_parser(
+        "rollback", help="restore files to their state before a given step"
+    )
+    rollback.add_argument("session_id", help="session to roll back")
+    rollback.add_argument(
+        "step",
+        type=int,
+        help="undo this step and everything after it (0 = undo the whole session)",
+    )
+    rollback.add_argument("--db", default=None, help="session database path")
+    rollback.add_argument(
+        "--workspace",
+        default=None,
+        help=(
+            "Windows path to restore into (default: the one recorded "
+            "in the session)"
+        ),
+    )
+    rollback.set_defaults(func=cmd_rollback)
+
+    report = sub.add_parser("report", help="render the execution trace of a session")
+    report.add_argument(
+        "session_id",
+        nargs="?",
+        default=None,
+        help="session to report on (default: the most recently updated one)",
+    )
+    report.add_argument("--db", default=None, help="session database path")
+    report.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="max steps to list (default 0 = all)",
+    )
+    report.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="show per-step prompts, replies and tool output previews",
+    )
+    report.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the report as JSON instead of a rendered table",
+    )
+    report.set_defaults(func=cmd_report)
+
+    bench = sub.add_parser("bench", help="run the evaluation suite")
+    bench.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "run", "verify"],
+        help="list tasks (default), run a benchmark, or verify the task set",
+    )
+    bench.add_argument("--provider", default=None, help="provider to benchmark")
+    bench.add_argument(
+        "--compare",
+        default=None,
+        help="comma-separated providers to run and compare, e.g. deepseek,openai",
+    )
+    bench.add_argument("--model", default=None, help="model override")
+    bench.add_argument(
+        "--task",
+        action="append",
+        default=None,
+        help="only this task id (repeatable)",
+    )
+    bench.add_argument(
+        "--difficulty",
+        action="append",
+        default=None,
+        choices=["simple", "medium", "hard"],
+        help="only this tier (repeatable)",
+    )
+    bench.add_argument("--limit", type=int, default=0, help="max tasks (0 = all)")
+    bench.add_argument("--attempts", type=int, default=1, help="attempts per task")
+    bench.add_argument("--workers", type=int, default=4, help="parallel attempts")
+    bench.add_argument("--max-steps", type=int, default=None, help="step cap per attempt")
+    bench.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="wall-clock cap per attempt, in seconds",
+    )
+    bench.add_argument("--db", default=None, help="record each attempt into this session database")
+    bench.add_argument("--workdir", default=None, help="where to create task sandboxes")
+    bench.add_argument("--keep", action="store_true", help="keep the sandboxes after the run")
+    bench.add_argument("--no-trace", action="store_true", help="do not record per-step traces")
+    bench.add_argument("--out", default=None, help="write the report JSON to this file")
+    bench.add_argument("--verbose", "-v", action="store_true", help="show per-task detail")
+    bench.add_argument("--json", action="store_true", help="emit JSON")
+    bench.set_defaults(func=cmd_bench)
 
     serve = sub.add_parser("serve", help="run the web UI")
     serve.add_argument("--host", default="127.0.0.1")
