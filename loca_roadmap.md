@@ -2,7 +2,7 @@
 
 > 6 周路线图 + 实时进度清单。每完成一项就勾选，状态同步更新。
 
-最后更新：2026-09-18 15:40
+最后更新：2026-09-18 17:06
 
 ---
 
@@ -344,6 +344,43 @@
 ---
 
 ## 本次会话变更日志
+
+### 2026-09-18 — 提交推送：Week 4-6 的改动按 5 批提交并推送到 GitHub
+
+用户指令：「就这样先commit项目上去，按照你认为合理的节奏来commit就行」。
+
+**为什么不能按周拆**：这不是「新写的代码按周提交」，而是把已经堆在工作区的四批改动
+（Week 4 / Windows-only / Week 5 / Week 6）**事后**整理成提交历史。而 `loca/cli.py`
+（+801 行，含 sessions / rollback / report / bench 四个新命令）、`loca/core/loop.py`
+（+136 行）、`README.md`、`loca_roadmap.md` 这几个文件**同时承载多批改动**。
+git 按文件快照提交，拆不开 —— 强行拆就得手工构造中间态，那不是真实历史。
+
+**最终 5 批**（按依赖自下而上，每批的文件边界自洽）：
+
+| # | commit | 主题 | 文件数 |
+|---|---|---|---|
+| 1 | `9a6483c` | observability：会话存储 / 检查点 / 上下文压缩 / 轨迹 | 16 |
+| 2 | `24c0a50` | providers：OpenAI 兼容层 + 真实 OpenAI / Anthropic | 9 |
+| 3 | `b65a65d` | eval：36 题评测集 + 并发 runner + 报告 | 174 |
+| 4 | `dbbf17c` | cli：四个新子命令接线 + Windows-only shell 改名 | 11 |
+| 5 | `f0571af` | docs：README / 路线图 / 审查报告 / 面试手册 | 8 |
+
+**验证**：
+- HEAD 全绿 —— 因为 `worktree == HEAD`，测工作区就等于测 HEAD：`ruff` rc=0，
+  `pytest -m "not live"` → **397 passed, 1 skipped**（8 项 live 未选）
+- 任务集全部入库：165 文件 / 36 个 `task.json` / 36 个 hidden 判分器 / 41 个参考答案
+- 历史里**没有** `.env` / `.venv/` / `.workbuddy/` / `.loca/`
+- 推送成功以**服务端事实**为准：`git ls-remote --heads origin` 返回 `f0571af`，与本地 HEAD 一致
+
+**踩到的坑（已写进记忆）**：
+1. 推送必须显式走本机代理 `127.0.0.1:7897`（`-c http.proxy=…`，且要在沙箱外执行）——
+   沙箱注入的代理连不上 GitHub（`CONNECT tunnel failed, response 502`），去掉代理直连又超时
+2. `PortableGit\…\etc\gitconfig.lock` 每次网络操作都会被留下（0 字节），
+   导致下一次操作报 `could not lock config file`
+3. push 后 `refs/remotes/origin/main` 会消失（`status -sb` 显示 `[gone]`），
+   需要 `git fetch origin --prune` 重建 —— 但远端其实已经更新了
+
+**未做**：审查报告里的 P1/P2 **一个都没修** —— 本轮只提交，不改代码。
 
 ### 2026-09-18 — 全项目审查：167 个勾选项逐条对代码 + 12 项缺陷（含 3 个 P1）
 
