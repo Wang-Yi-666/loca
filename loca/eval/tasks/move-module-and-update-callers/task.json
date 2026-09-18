@@ -1,0 +1,16 @@
+{
+  "id": "move-module-and-update-callers",
+  "title": "Move parse_duration out of utils.py into its own module",
+  "difficulty": "medium",
+  "tags": [
+    "refactor",
+    "cross-file"
+  ],
+  "prompt": "utils.py has grown a duration parser that does not belong there. Move parse_duration into a new module duration.py, and update main.py to import it from the new home. duration.py must own the code - re-exporting it from utils is not a move. The parsing behaviour itself must not change.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_duration.py"
+    ]
+  }
+}

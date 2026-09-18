@@ -1,0 +1,17 @@
+{
+  "id": "implement-log-parser",
+  "title": "Implement the log line parser used by summary.py",
+  "difficulty": "medium",
+  "tags": [
+    "implementation",
+    "parsing",
+    "cross-file"
+  ],
+  "prompt": "logparse.py declares parse_line() but raises NotImplementedError, and summary.py already uses it to count log levels. Implement it to the docstring: both the timestamp and the level field are validated, and the message may itself contain spaces, so split off the first two fields and treat the rest as the message.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_logparse.py"
+    ]
+  }
+}

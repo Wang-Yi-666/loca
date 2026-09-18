@@ -1,0 +1,16 @@
+{
+  "id": "fix-sort-key",
+  "title": "People are sorted by the string form of their age",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "sorting"
+  ],
+  "prompt": "people.py sorts a small table of people by age, oldest first. The order comes out as grace, alan, ada, which is wrong. Fix the sort so it uses the numeric age.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_people.py"
+    ]
+  }
+}

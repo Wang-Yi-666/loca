@@ -1,0 +1,16 @@
+{
+  "id": "implement-retry-helper",
+  "title": "Implement call_with_retry",
+  "difficulty": "medium",
+  "tags": [
+    "implementation",
+    "retries"
+  ],
+  "prompt": "retry.py declares call_with_retry(func, times, delay=0.0, sleep=None) but raises NotImplementedError. Implement it to the docstring: it returns the first successful result, re-raises the last exception once every attempt has failed, and waits between attempts but never after the final one. Tests need to inject `sleep` so they do not actually wait.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_retry.py"
+    ]
+  }
+}

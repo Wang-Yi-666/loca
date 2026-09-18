@@ -1,0 +1,16 @@
+{
+  "id": "impl-csv-line-parser",
+  "title": "Implement a CSV line parser with quoted fields",
+  "difficulty": "hard",
+  "tags": [
+    "implementation",
+    "parsing"
+  ],
+  "prompt": "Implement parse_line() in csvline.py. Quoted fields may contain commas, a doubled quote inside a quoted field means one literal quote, and quotes are only special at the start of a field. Empty fields must be preserved. Do not use the csv module - write the parser.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_csvline.py"
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "wire-in-missing-import",
+  "title": "shapes.py uses geometry helpers it never imported",
+  "difficulty": "medium",
+  "tags": [
+    "bugfix",
+    "imports"
+  ],
+  "prompt": "shapes.py builds a one-line description of a circle from geometry.py, but calling describe_circle(1) raises NameError. Wire up the missing import so the two modules work together. Do not move the maths into shapes.py - the helpers belong in geometry.py.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_shapes.py"
+    ]
+  }
+}

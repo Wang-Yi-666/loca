@@ -1,0 +1,16 @@
+{
+  "id": "fix-truthy-string",
+  "title": "is_even returns strings instead of booleans",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "types"
+  ],
+  "prompt": "Callers of parity.py keep taking the wrong branch. It turns out is_even returns the strings 'True' and 'False', and both are truthy, so if is_even(n) is always true. Make it return real booleans.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_parity.py"
+    ]
+  }
+}

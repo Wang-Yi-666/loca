@@ -1,0 +1,16 @@
+{
+  "id": "impl-merge-intervals",
+  "title": "Implement interval merging",
+  "difficulty": "hard",
+  "tags": [
+    "implementation",
+    "algorithms"
+  ],
+  "prompt": "Implement merge() in intervals.py. Intervals are closed [start, end] pairs and the input is not sorted. Overlapping intervals merge, and so do intervals that merely touch (so [1,2] and [2,3] become [1,3]). The input list must not be modified.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_intervals.py"
+    ]
+  }
+}

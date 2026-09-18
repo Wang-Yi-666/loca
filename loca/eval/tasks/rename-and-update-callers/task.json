@@ -1,0 +1,17 @@
+{
+  "id": "rename-and-update-callers",
+  "title": "Rename calc_total to total everywhere",
+  "difficulty": "medium",
+  "tags": [
+    "refactor",
+    "rename",
+    "call-sites"
+  ],
+  "prompt": "calc.py's calc_total is being renamed to total. Rename the function and update every caller in the project - a.py and b.py both import it. When you are done the old name must be gone from calc, not kept around as an alias.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_rename.py"
+    ]
+  }
+}

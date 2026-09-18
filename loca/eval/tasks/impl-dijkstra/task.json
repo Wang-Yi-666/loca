@@ -1,0 +1,17 @@
+{
+  "id": "impl-dijkstra",
+  "title": "Implement Dijkstra shortest path",
+  "difficulty": "hard",
+  "tags": [
+    "implementation",
+    "graphs",
+    "algorithms"
+  ],
+  "prompt": "Implement shortest_path() in graph.py. It takes a list of (source, target, weight) triples for a directed graph with positive weights and returns (cost, path). When the goal cannot be reached, return (math.inf, []). A start that equals the goal costs 0.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_graph.py"
+    ]
+  }
+}

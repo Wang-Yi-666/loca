@@ -1,0 +1,16 @@
+{
+  "id": "fix-off-by-one",
+  "title": "count_up drops the last number",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "off-by-one"
+  ],
+  "prompt": "counter.py has a helper count_up(n) that is supposed to return the list [1, 2, ..., n]. Right now n itself is always missing, so count_up(3) gives [1, 2]. Fix it without renaming the function or changing its signature.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_counter.py"
+    ]
+  }
+}

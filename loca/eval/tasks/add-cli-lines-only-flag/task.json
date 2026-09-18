@@ -1,0 +1,17 @@
+{
+  "id": "add-cli-lines-only-flag",
+  "title": "Add a --lines-only flag to the wc clone",
+  "difficulty": "medium",
+  "tags": [
+    "feature",
+    "cli",
+    "argparse"
+  ],
+  "prompt": "wc.py is a small clone of the Unix wc command. It already supports --words-only. Add --lines-only so it prints just the line count, and make the two flags mutually exclusive: passing both must fail with a non-zero exit code rather than silently picking one. The default output stays '<lines> <words> <chars>'.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_wc_cli.py"
+    ]
+  }
+}

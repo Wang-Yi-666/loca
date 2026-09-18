@@ -1,0 +1,17 @@
+{
+  "id": "fix-slice-bounds",
+  "title": "first_and_last indexes one past the end",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "off-by-one",
+    "sequences"
+  ],
+  "prompt": "ends.py exposes first_and_last(items) which should return a tuple of the first and last element. With [1, 2] it raises IndexError. An empty sequence should still raise IndexError.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_ends.py"
+    ]
+  }
+}

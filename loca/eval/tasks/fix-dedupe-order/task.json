@@ -1,0 +1,16 @@
+{
+  "id": "fix-dedupe-order",
+  "title": "unique() loses the original order",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "ordering"
+  ],
+  "prompt": "dedupe.py's unique() de-duplicates but the order comes out scrambled, because it goes through a set. It must keep the order in which items first appear.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_dedupe.py"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "add-dataclass-field",
+  "title": "Add an email field to Account and update its callers",
+  "difficulty": "medium",
+  "tags": [
+    "refactor",
+    "dataclasses",
+    "call-sites"
+  ],
+  "prompt": "Account in models.py needs a new required field, email, positioned after name. records.py builds Account objects from rows and those rows now carry three values: (id, name, email). Update both files so nothing is left behind - and keep the field required, do not default it to an empty string.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_accounts.py"
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "implement-median-of-three",
+  "title": "Implement median_of_three",
+  "difficulty": "simple",
+  "tags": [
+    "implementation",
+    "algorithms"
+  ],
+  "prompt": "median.py has a placeholder median_of_three(a, b, c) that raises NotImplementedError. Implement it so it returns the middle value of the three, handling duplicates, floats and negative numbers. Do not use the statistics module.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_median.py"
+    ]
+  }
+}

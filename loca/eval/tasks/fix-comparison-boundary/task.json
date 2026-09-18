@@ -1,0 +1,16 @@
+{
+  "id": "fix-comparison-boundary",
+  "title": "can_vote excludes people who are exactly 18",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "boundary"
+  ],
+  "prompt": "access.py has can_vote(age), documented as 'old enough to vote (18 or over)'. Someone who is exactly 18 is currently rejected. Fix the boundary. It should keep returning real booleans.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_access.py"
+    ]
+  }
+}

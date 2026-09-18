@@ -1,0 +1,16 @@
+{
+  "id": "fix-recursion-base-case",
+  "title": "factorial never reaches its base case",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "recursion"
+  ],
+  "prompt": "maths.py has factorial(n) for n >= 0. Calling factorial(0) hangs and then raises RecursionError. Fix the base case so the whole documented range works.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_maths.py"
+    ]
+  }
+}

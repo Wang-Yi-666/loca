@@ -1,0 +1,17 @@
+{
+  "id": "fix-arity-mismatch",
+  "title": "main.py calls format_row with one argument too many",
+  "difficulty": "medium",
+  "tags": [
+    "bugfix",
+    "interfaces",
+    "cross-file"
+  ],
+  "prompt": "render() in main.py crashes with TypeError because it passes three arguments to report.format_row, which only takes two. report.format_row lays out two 9-character columns (label left-aligned, value right-aligned), and every rendered line must stay 18 characters wide. Fix it on whichever side is right.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_render.py"
+    ]
+  }
+}

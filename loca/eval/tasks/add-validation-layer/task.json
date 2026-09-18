@@ -1,0 +1,17 @@
+{
+  "id": "add-validation-layer",
+  "title": "Implement the validators config.py relies on",
+  "difficulty": "medium",
+  "tags": [
+    "implementation",
+    "validation",
+    "cross-file"
+  ],
+  "prompt": "validators.py has two stubs and config.py already calls them to check user input. Implement both to the contract in their docstrings. Note the trap: True and False are instances of int in Python, but they are not acceptable retry counts.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_config.py"
+    ]
+  }
+}

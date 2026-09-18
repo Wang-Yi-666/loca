@@ -1,0 +1,16 @@
+{
+  "id": "fix-name-normalisation",
+  "title": "normalize only lower-cases the name",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "strings"
+  ],
+  "prompt": "names.py is meant to turn raw user input into a display name: trimmed, with runs of whitespace collapsed to one space, and title-cased. Right now it just lower-cases everything, so '  ada lovelace ' comes out as '  ada lovelace '. Hyphenated names should title-case each part, so 'jean-luc picard' becomes 'Jean-Luc Picard'.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_names.py"
+    ]
+  }
+}

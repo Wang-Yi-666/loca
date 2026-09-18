@@ -1,0 +1,16 @@
+{
+  "id": "fix-missing-return",
+  "title": "total_with_tax computes the total but returns None",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "return"
+  ],
+  "prompt": "pricing.py's total_with_tax(prices, rate) sums the prices and applies tax, but callers always get None back. An empty price list should give 0.0.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_pricing.py"
+    ]
+  }
+}

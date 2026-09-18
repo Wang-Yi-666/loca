@@ -1,0 +1,17 @@
+{
+  "id": "fix-page-boundary",
+  "title": "Pagination is off by one page",
+  "difficulty": "medium",
+  "tags": [
+    "bugfix",
+    "off-by-one",
+    "cross-file"
+  ],
+  "prompt": "The pager in formatter.py returns the wrong slice of ITEMS - page(1) gives the second page's items instead of the first. pager.page_bounds documents itself as taking a 1-based page number, so fix whichever side is actually wrong. A page past the end must return an empty list, not raise.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_pager.py"
+    ]
+  }
+}

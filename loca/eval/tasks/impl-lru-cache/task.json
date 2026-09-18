@@ -1,0 +1,16 @@
+{
+  "id": "impl-lru-cache",
+  "title": "Implement an LRU cache",
+  "difficulty": "hard",
+  "tags": [
+    "implementation",
+    "data-structures"
+  ],
+  "prompt": "Implement cache.py's LRUCache. Both get and put count as a use of a key; put on a full cache evicts the least recently used entry; overwriting an existing key must not grow the cache. get returns None for a missing key. Aim for O(1) operations.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_cache.py"
+    ]
+  }
+}

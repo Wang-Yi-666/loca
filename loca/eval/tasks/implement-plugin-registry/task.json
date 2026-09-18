@@ -1,0 +1,17 @@
+{
+  "id": "implement-plugin-registry",
+  "title": "Implement the plugin registry that app.py uses",
+  "difficulty": "medium",
+  "tags": [
+    "implementation",
+    "registry",
+    "cross-file"
+  ],
+  "prompt": "plugins.py is a stub: register/get/names all raise NotImplementedError, and app.py already depends on them. Implement the module to the contract in its docstrings. Registering the same name twice should overwrite the previous entry rather than fail.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_plugins.py"
+    ]
+  }
+}

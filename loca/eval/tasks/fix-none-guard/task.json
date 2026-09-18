@@ -1,0 +1,16 @@
+{
+  "id": "fix-none-guard",
+  "title": "initials crashes on a missing name",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "edge-cases"
+  ],
+  "prompt": "textutil.py's initials(name) turns a full name into initials: 'Ada Lovelace' becomes 'AL'. Its docstring says a blank or missing name yields an empty string, but passing None raises AttributeError today. Make the documented behaviour true, and make sure extra whitespace is handled.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_textutil.py"
+    ]
+  }
+}

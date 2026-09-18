@@ -1,0 +1,17 @@
+{
+  "id": "impl-expression-evaluator",
+  "title": "Implement an arithmetic expression evaluator",
+  "difficulty": "hard",
+  "tags": [
+    "implementation",
+    "parsing",
+    "recursion"
+  ],
+  "prompt": "Implement evaluate() in expr.py: an arithmetic evaluator supporting + - * / with the usual precedence (and left associativity), parentheses, and whitespace anywhere. Use integer division for /. Malformed input and unbalanced parentheses must raise ValueError. Do not use eval().",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_expr.py"
+    ]
+  }
+}

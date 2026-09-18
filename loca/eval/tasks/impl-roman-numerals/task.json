@@ -1,0 +1,17 @@
+{
+  "id": "impl-roman-numerals",
+  "title": "Implement Roman numeral conversion both ways",
+  "difficulty": "hard",
+  "tags": [
+    "implementation",
+    "algorithms",
+    "validation"
+  ],
+  "prompt": "Implement to_roman() and from_roman() in roman.py. The two must round-trip exactly: from_roman has to reject anything whose canonical form differs from what to_roman would produce, so 'IIII' and 'VV' are errors even though they look readable.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_roman.py"
+    ]
+  }
+}

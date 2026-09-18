@@ -1,0 +1,17 @@
+{
+  "id": "impl-json-pointer",
+  "title": "Implement RFC 6901 JSON Pointer resolution",
+  "difficulty": "hard",
+  "tags": [
+    "implementation",
+    "spec",
+    "data-structures"
+  ],
+  "prompt": "Implement resolve() in jsonptr.py following RFC 6901. Mind the escaping order: ~1 becomes / and ~0 becomes ~, and they must be unescaped in that order so a key containing the literal text ~1 survives a round trip. Missing object keys raise KeyError; list indexes that are missing or not integers raise IndexError.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_jsonptr.py"
+    ]
+  }
+}

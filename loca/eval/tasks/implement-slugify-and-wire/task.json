@@ -1,0 +1,17 @@
+{
+  "id": "implement-slugify-and-wire",
+  "title": "Implement slugify, which blog.py already depends on",
+  "difficulty": "medium",
+  "tags": [
+    "implementation",
+    "strings",
+    "cross-file"
+  ],
+  "prompt": "textutil.py declares slugify(text) but raises NotImplementedError, and blog.py already calls it to build post URLs. Implement it to the spec in its docstring. The rule that trips people up: only ASCII letters and digits survive, so accented characters are dropped rather than transliterated.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_slugify.py"
+    ]
+  }
+}

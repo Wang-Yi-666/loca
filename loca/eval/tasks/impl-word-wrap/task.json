@@ -1,0 +1,16 @@
+{
+  "id": "impl-word-wrap",
+  "title": "Implement greedy word wrapping",
+  "difficulty": "hard",
+  "tags": [
+    "implementation",
+    "strings"
+  ],
+  "prompt": "Implement wrap() in wrap.py: greedy word wrap to a maximum width. Words longer than the width go on a line of their own and are never split. An existing newline in the text ends the current line. Lines must not carry trailing spaces, and the original words must not be altered.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_wrap.py"
+    ]
+  }
+}

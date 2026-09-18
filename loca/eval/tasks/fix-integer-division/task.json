@@ -1,0 +1,16 @@
+{
+  "id": "fix-integer-division",
+  "title": "average truncates and crashes on empty input",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "arithmetic"
+  ],
+  "prompt": "stats.py has an average() helper with two problems: it truncates the result (average([1, 2, 3, 4]) returns 2 instead of 2.5 because of integer division), and it blows up with ZeroDivisionError on an empty list instead of raising ValueError.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_stats.py"
+    ]
+  }
+}

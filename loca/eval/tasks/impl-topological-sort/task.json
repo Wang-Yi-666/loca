@@ -1,0 +1,16 @@
+{
+  "id": "impl-topological-sort",
+  "title": "Implement topological sort with cycle detection",
+  "difficulty": "hard",
+  "tags": [
+    "implementation",
+    "graphs"
+  ],
+  "prompt": "Implement toposort() in toposort.py. The result must be deterministic: when several nodes are ready at the same time, take them in alphabetical order. Nodes that only ever appear as dependencies must still be included, and a cycle (including a self-loop) must raise ValueError.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_toposort.py"
+    ]
+  }
+}

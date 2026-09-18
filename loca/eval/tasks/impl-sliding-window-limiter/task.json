@@ -1,0 +1,17 @@
+{
+  "id": "impl-sliding-window-limiter",
+  "title": "Implement a sliding-window rate limiter",
+  "difficulty": "hard",
+  "tags": [
+    "implementation",
+    "state",
+    "algorithms"
+  ],
+  "prompt": "Implement SlidingWindowLimiter in limiter.py. Time is passed in as a float so behaviour is deterministic - do not read the clock. Watch the window boundary: an event recorded at time t stops counting once now - t is greater than or equal to the window. Rejected calls must not consume budget.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_limiter.py"
+    ]
+  }
+}

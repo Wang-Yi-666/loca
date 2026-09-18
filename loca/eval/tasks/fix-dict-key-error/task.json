@@ -1,0 +1,16 @@
+{
+  "id": "fix-dict-key-error",
+  "title": "count_words raises KeyError on the first occurrence",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "dicts"
+  ],
+  "prompt": "wordcount.py counts words case-insensitively, but it raises KeyError as soon as it meets a word it has not seen before. Make it work; the result should be a dict mapping lower-cased words to counts.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_wordcount.py"
+    ]
+  }
+}

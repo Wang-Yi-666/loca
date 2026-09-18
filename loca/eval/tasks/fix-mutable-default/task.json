@@ -1,0 +1,16 @@
+{
+  "id": "fix-mutable-default",
+  "title": "Default list argument is shared between calls",
+  "difficulty": "simple",
+  "tags": [
+    "bugfix",
+    "python-semantics"
+  ],
+  "prompt": "bag.py lets you add items to a list, but each call seems to remember the previous one: add_item('a') then add_item('b') returns ['a', 'b'] instead of ['b']. Callers that DO pass their own list must still have that exact list mutated in place, so do not just copy the input.",
+  "checks": {
+    "kind": "pytest",
+    "paths": [
+      "test_bag.py"
+    ]
+  }
+}
