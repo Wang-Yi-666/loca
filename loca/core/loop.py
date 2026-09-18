@@ -23,6 +23,15 @@ Failure handling (Week 3):
   rather than escaping the generator, so a UI/SSE consumer keeps its stream.
 - Tool failures are recoverable by design: they come back as a
   ``ToolResult(is_error=True)`` and the model gets a chance to self-correct.
+
+Durability (Week 4):
+
+- A :class:`~loca.observability.checkpoint.CheckpointManager` can be attached to
+  snapshot every file a tool is about to touch, so a bad edit is undoable.
+- A :class:`~loca.core.context.ContextManager` can be attached to summarize old
+  turns instead of dropping them when the context window fills up.
+- Both are optional injections: the loop keeps working with neither, and the
+  caller decides what a turn costs.
 """
 
 from __future__ import annotations
@@ -31,8 +40,10 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
+from loca.core.context import ContextManager
 from loca.core.events import AgentEvent, EventType
 from loca.core.recovery import RetryingProvider, is_transient, trim_messages
+from loca.observability.checkpoint import CheckpointManager
 from loca.providers.base import LLMProvider
 from loca.providers.types import (
     ChatRequest,
@@ -52,8 +63,11 @@ class AgentLoop:
     """Drive a multi-step agent conversation."""
 
     DEFAULT_SYSTEM_PROMPT = (
-        "You are loca, a coding assistant. You have access to filesystem and "
-        "shell tools. Use them to answer the user's request. Be concise."
+        "You are loca, a coding assistant running on Windows. You have access "
+        "to filesystem and shell tools. Use them to answer the user's request. "
+        "All paths are Windows paths (e.g. D:\\Projects\\repo). The shell is "
+        "cmd.exe, so use Windows commands (dir, type, del, findstr) rather "
+        "than POSIX ones (ls, cat, rm, grep). Be concise."
     )
 
     #: Sent as a user turn when the model's answer was truncated by the output
@@ -75,6 +89,8 @@ class AgentLoop:
         retries: int = 2,
         context_token_budget: int | None = DEFAULT_TOKEN_BUDGET,
         keep_recent_messages: int = 6,
+        checkpoint_manager: CheckpointManager | None = None,
+        context_manager: ContextManager | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         """
@@ -86,8 +102,15 @@ class AgentLoop:
         context_token_budget:
             Estimated token ceiling for one request. The loop drops the oldest
             turns before calling the model. ``None`` disables trimming.
+            Ignored when ``context_manager`` is given — that object owns the
+            budget (and can summarize instead of dropping).
         keep_recent_messages:
             Messages that survive a trim regardless of the budget.
+        checkpoint_manager:
+            When attached, every file-mutating tool call is preceded by a
+            snapshot of its targets. ``None`` means no undo history.
+        context_manager:
+            When attached, takes over context budgeting entirely.
         sleep:
             Injected so tests can run the retry path without real delays.
         """
@@ -105,6 +128,8 @@ class AgentLoop:
         self.retries = retries
         self.context_token_budget = context_token_budget
         self.keep_recent_messages = keep_recent_messages
+        self.checkpoint_manager = checkpoint_manager
+        self.context_manager = context_manager
         #: Full message list of the most recent ``run()`` (system prompt, the
         #: user turn, every assistant/tool message). Feed it back as
         #: ``history`` for multi-turn chat. It is the same list object the loop
@@ -142,29 +167,21 @@ class AgentLoop:
         total_tokens = 0
         last_finish: FinishReason | None = None
         for step in range(self.max_steps):
-            yield AgentEvent(type=EventType.STEP_START, data={"step": step})
+            # Session-global step counter, advanced by the loop (not the caller
+            # and not the tool) so checkpoints and traces share one monotonic
+            # numbering across every turn of a session. It is announced with
+            # the step so a trace can be lined up with `loca rollback <step>`.
+            global_step = ctx.step_index
+            ctx.step_index += 1
+            yield AgentEvent(
+                type=EventType.STEP_START,
+                data={"step": step, "global_step": global_step},
+            )
 
             # Keep the request inside the model's context window. The estimate
             # is cheap and deliberately conservative; a wrong estimate only
             # costs some old history, never a failed call.
-            if self.context_token_budget is not None:
-                outcome = trim_messages(
-                    messages,
-                    max_tokens=self.context_token_budget,
-                    keep_recent=self.keep_recent_messages,
-                )
-                if outcome.trimmed:
-                    # Mutate in place so ``last_transcript`` keeps pointing at
-                    # the live conversation.
-                    messages[:] = outcome.messages
-                    yield AgentEvent(
-                        type=EventType.CONTEXT_TRIMMED,
-                        data={
-                            "dropped": outcome.dropped,
-                            "estimated_tokens": outcome.estimated_tokens,
-                            "budget": self.context_token_budget,
-                        },
-                    )
+            yield from self._compact_events(messages)
 
             request = ChatRequest(
                 # Snapshot the list: we keep appending tool results to
@@ -275,6 +292,9 @@ class AgentLoop:
                         "arguments": call.arguments,
                     },
                 )
+                checkpoint = self._capture_checkpoint(call, ctx, step=global_step)
+                if checkpoint is not None:
+                    yield checkpoint
                 result = self._execute_tool(call, ctx)
                 yield AgentEvent(
                     type=EventType.TOOL_RESULT,
@@ -303,6 +323,101 @@ class AgentLoop:
         )
         if last_finish is not None:
             _ = last_finish  # silence linters
+
+    # ---- context & checkpoints --------------------------------------------
+
+    def _compact_events(self, messages: list[Message]) -> Iterator[AgentEvent]:
+        """Shrink ``messages`` in place if it overflows the window.
+
+        Two strategies, in order of preference (see
+        :class:`~loca.core.context.ContextManager`): fold old turns into a
+        summary, or — when no summarizer is attached — drop them. Either way the
+        list is mutated in place so ``last_transcript`` stays live.
+        """
+        if self.context_manager is not None:
+            outcome = self.context_manager.fit(messages)
+            if not outcome.trimmed:
+                return
+            messages[:] = outcome.messages
+            if outcome.summarized:
+                yield AgentEvent(
+                    type=EventType.CONTEXT_SUMMARIZED,
+                    data={
+                        "summarized": outcome.summarized_messages,
+                        "dropped": outcome.dropped,
+                        "summary_tokens": outcome.summary_tokens,
+                        "estimated_tokens": outcome.estimated_tokens,
+                        "budget": outcome.budget,
+                    },
+                )
+            else:
+                yield AgentEvent(
+                    type=EventType.CONTEXT_TRIMMED,
+                    data={
+                        "dropped": outcome.dropped,
+                        "estimated_tokens": outcome.estimated_tokens,
+                        "budget": outcome.budget,
+                    },
+                )
+            return
+
+        if self.context_token_budget is None:
+            return
+        outcome = trim_messages(
+            messages,
+            max_tokens=self.context_token_budget,
+            keep_recent=self.keep_recent_messages,
+        )
+        if outcome.trimmed:
+            messages[:] = outcome.messages
+            yield AgentEvent(
+                type=EventType.CONTEXT_TRIMMED,
+                data={
+                    "dropped": outcome.dropped,
+                    "estimated_tokens": outcome.estimated_tokens,
+                    "budget": self.context_token_budget,
+                },
+            )
+
+    def compact(self) -> bool:
+        """Summarize the current transcript on demand (backs ``/compact``).
+
+        Returns ``True`` when the transcript actually changed. Unlike
+        :meth:`_compact_events` this runs even when the conversation still fits,
+        because the user explicitly asked for it.
+        """
+        if self.context_manager is None or not self.last_transcript:
+            return False
+        messages, outcome = self.context_manager.compact(self.last_transcript)
+        if outcome is None:
+            return False
+        self.last_transcript[:] = messages
+        return True
+
+    def _capture_checkpoint(
+        self, call: Any, ctx: ToolContext, *, step: int
+    ) -> AgentEvent | None:
+        """Snapshot the files this call is about to touch, if anything does."""
+        if self.checkpoint_manager is None:
+            return None
+        checkpoint = self.checkpoint_manager.capture(
+            session_id=ctx.session_id,
+            step=step,
+            tool=call.name,
+            arguments=call.arguments if isinstance(call.arguments, dict) else {},
+            workspace=ctx.workspace,
+        )
+        if checkpoint is None:
+            return None
+        return AgentEvent(
+            type=EventType.CHECKPOINT,
+            data={
+                "step": step,
+                "tool": call.name,
+                "files": [s.path for s in checkpoint.snapshots],
+                "restorable": all(s.restorable for s in checkpoint.snapshots),
+            },
+        )
 
     # ---- tool dispatch ----------------------------------------------------
 

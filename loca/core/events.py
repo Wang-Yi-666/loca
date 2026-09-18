@@ -20,7 +20,9 @@ class EventType(str, Enum):
     TOOL_RESULT = "tool_result"
     STEP_START = "step_start"
     USAGE = "usage"
+    CHECKPOINT = "checkpoint"
     CONTEXT_TRIMMED = "context_trimmed"
+    CONTEXT_SUMMARIZED = "context_summarized"
     RECOVERY = "recovery"
     ERROR = "error"
     DONE = "done"
@@ -35,9 +37,14 @@ class AgentEvent:
     - TEXT_DELTA: ``{"content": str}``
     - TOOL_CALL:  ``{"id": str, "name": str, "arguments": dict}``
     - TOOL_RESULT: ``{"name": str, "content": str, "is_error": bool}``
-    - STEP_START: ``{"step": int}``
+    - STEP_START: ``{"step": int, "global_step": int}`` — ``step`` is the index
+      inside this ``run()`` call; ``global_step`` is the session-wide counter
+      (the number ``loca rollback`` and traces use).
     - USAGE: ``{"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}``
+    - CHECKPOINT: ``{"step": int, "tool": str, "files": [str], "restorable": bool}``
     - CONTEXT_TRIMMED: ``{"dropped": int, "estimated_tokens": int, "budget": int}``
+    - CONTEXT_SUMMARIZED: ``{"dropped": int, "summarized": int, "summary_tokens": int,
+      "estimated_tokens": int, "budget": int}``
     - RECOVERY: ``{"reason": str, "step": int}``
     - ERROR: ``{"message": str, "step": int, "retryable": bool}``
     - DONE: ``{"reason": str, "steps": int, "total_tokens": int}``

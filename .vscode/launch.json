@@ -60,6 +60,29 @@
       }
     },
     {
+      // Resume a stored session by id (change the id in args), or run this
+      // once with a new name — `loca sessions` lists what exists.
+      "name": "loca chat --session (resume)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "loca.cli",
+      "args": ["chat", "--session", "demo"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      // Week 4 surface: stored sessions (id, last update, message count, title).
+      "name": "loca sessions (list)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "loca.cli",
+      "args": ["sessions"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
       // Diagnostics: which tools exist, which providers have a key.
       "name": "loca tools / providers",
       "type": "debugpy",
