@@ -98,7 +98,7 @@ def _fragmented_call_chunks() -> list[FakeRawChunk]:
                             FakeDeltaToolCall(
                                 index=0,
                                 id="call_abc",
-                                function=FakeFunction(name="bash"),
+                                function=FakeFunction(name="shell"),
                             )
                         ]
                     )
@@ -153,7 +153,7 @@ def test_tool_call_flushed_once_with_full_arguments() -> None:
     assert len(flushed) == 1, "call must be emitted exactly once, fully assembled"
     (tc,) = flushed[0].delta_tool_calls
     assert tc.id == "call_abc"
-    assert tc.name == "bash"
+    assert tc.name == "shell"
     assert tc.arguments == {"command": "echo hi"}
 
 
@@ -165,7 +165,7 @@ def test_parallel_tool_calls_all_flushed() -> None:
                     delta=FakeDelta(
                         tool_calls=[
                             FakeDeltaToolCall(
-                                index=0, id="c0", function=FakeFunction(name="bash")
+                                index=0, id="c0", function=FakeFunction(name="shell")
                             ),
                             FakeDeltaToolCall(
                                 index=1, id="c1", function=FakeFunction(name="echo")
@@ -181,7 +181,7 @@ def test_parallel_tool_calls_all_flushed() -> None:
                     delta=FakeDelta(
                         tool_calls=[
                             FakeDeltaToolCall(
-                                index=0, function=FakeFunction(arguments='{"command": "ls"}')
+                                index=0, function=FakeFunction(arguments='{"command": "dir"}')
                             )
                         ]
                     )
@@ -209,8 +209,8 @@ def test_parallel_tool_calls_all_flushed() -> None:
     flushed = [c for c in provider.stream_chat(_request()) if c.delta_tool_calls]
     assert len(flushed) == 1
     calls = {tc.name: tc for tc in flushed[0].delta_tool_calls}
-    assert set(calls) == {"bash", "echo"}
-    assert calls["bash"].arguments == {"command": "ls"}
+    assert set(calls) == {"shell", "echo"}
+    assert calls["shell"].arguments == {"command": "dir"}
     assert calls["echo"].arguments == {"text": "hi"}
 
 

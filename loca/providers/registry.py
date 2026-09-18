@@ -1,7 +1,13 @@
 """Provider registry.
 
-Resolves a provider instance from environment variables. Default provider
-is DeepSeek (the only fully-implemented one today).
+Resolves a provider instance from environment variables. All three providers
+are fully implemented; DeepSeek is the default because it is the one loca is
+developed and tested against end to end (see ``pytest -m live``).
+
+Credentials come from ``LOCA_<NAME>_API_KEY``. Endpoint and model can be
+overridden per provider with ``LOCA_<NAME>_BASE_URL`` / ``LOCA_<NAME>_MODEL``,
+which is what makes OpenAI-compatible gateways and self-hosted models usable
+without touching code.
 """
 
 from __future__ import annotations

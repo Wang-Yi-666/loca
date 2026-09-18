@@ -17,7 +17,6 @@ dependencies = [
     "pydantic>=2.6",
     "python-dotenv>=1.0",
     "rich>=13.7",
-    "tenacity>=8.2",
     "jsonschema>=4.21",
     "fastapi>=0.110",
     "uvicorn>=0.27",
@@ -30,6 +29,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
 ]
+# Only needed to talk to Anthropic. The provider imports it lazily, so the core
+# install stays free of a SDK most users never load.
+anthropic = ["anthropic>=0.40"]
 
 [project.scripts]
 loca = "loca.cli:main"
@@ -52,6 +54,12 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# The eval task set is *fixture* code, not project code. Its seed files carry
+# deliberate defects (mutable default arguments, unused variables, wrong
+# comparisons) because fixing them is the task, and its graders are written to
+# be run inside a sandbox rather than imported here. Linting them would mean
+# silencing real findings in the one place they are the point.
+extend-exclude = ["loca/eval/tasks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "W"]

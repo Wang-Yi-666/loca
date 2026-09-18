@@ -1,34 +1,24 @@
-"""OpenAI provider stub.
+"""OpenAI provider.
 
-The architecture is fully wired up — calling code does not need to change when
-this is implemented. Only the credential is missing for now.
+OpenAI *is* the protocol that :mod:`loca.providers.openai_compat` implements,
+so this provider is the base class plus an endpoint and a default model — the
+concrete payoff of writing the DeepSeek integration against the wire format
+rather than against the vendor.
+
+Useful overrides:
+- ``LOCA_OPENAI_BASE_URL`` — point at Azure OpenAI, a proxy, or a gateway.
+- ``LOCA_OPENAI_MODEL`` — change the default model.
+- ``--model`` on ``loca chat`` always wins, because it travels on the request.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
-from loca.providers.base import LLMProvider
-from loca.providers.types import ChatRequest, ChatResponse, StreamChunk
+from loca.providers.openai_compat import OpenAICompatibleProvider
 
 
-class OpenAIProvider(LLMProvider):
+class OpenAIProvider(OpenAICompatibleProvider):
+    """OpenAI chat completions."""
+
     name = "openai"
-
-    def __init__(self, api_key: str) -> None:
-        if not api_key:
-            raise ValueError(
-                "OpenAIProvider requires OPENAI_API_KEY. Set LOCA_OPENAI_API_KEY."
-            )
-        self._api_key = api_key  # unused until implemented
-
-    def chat(self, request: ChatRequest) -> ChatResponse:
-        raise NotImplementedError(
-            "OpenAI provider is scaffolded but not yet implemented. "
-            "Drop LOCA_OPENAI_API_KEY into .env and finish chat() in Week 5."
-        )
-
-    def stream_chat(self, request: ChatRequest) -> Iterator[StreamChunk]:
-        raise NotImplementedError("OpenAI streaming is not implemented yet.")
-        if False:  # pragma: no cover
-            yield
+    default_base_url = "https://api.openai.com/v1"
+    default_model = "gpt-4o-mini"
