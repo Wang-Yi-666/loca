@@ -34,7 +34,10 @@ class AgentEvent:
 
     ``data`` shape depends on ``type``:
 
-    - TEXT_DELTA: ``{"content": str}``
+    - TEXT_DELTA: ``{"content": str}``, plus ``"reasoning": str`` on the deltas
+      that carry the model's private thinking (DeepSeek ``reasoning_content``,
+      Anthropic ``thinking``). Those arrive with an empty ``content``, so a
+      renderer can treat them as a separate channel.
     - TOOL_CALL:  ``{"id": str, "name": str, "arguments": dict}``
     - TOOL_RESULT: ``{"name": str, "content": str, "is_error": bool}``
     - STEP_START: ``{"step": int, "global_step": int}`` — ``step`` is the index
@@ -45,7 +48,12 @@ class AgentEvent:
     - CONTEXT_TRIMMED: ``{"dropped": int, "estimated_tokens": int, "budget": int}``
     - CONTEXT_SUMMARIZED: ``{"dropped": int, "summarized": int, "summary_tokens": int,
       "estimated_tokens": int, "budget": int}``
-    - RECOVERY: ``{"reason": str, "step": int}``
+    - RECOVERY: ``{"reason": str, "step": int}`` — the loop carried on instead
+      of ending the turn. ``reason`` says how: ``"length"`` (the reply hit the
+      output cap, so the model was asked to continue) or ``"provider_retry"``
+      (a transient provider failure the retry wrapper absorbed, with ``detail``
+      naming the exception). The two are counted separately downstream — they
+      are different events that happened to need the same vocabulary.
     - ERROR: ``{"message": str, "step": int, "retryable": bool}``
     - DONE: ``{"reason": str, "steps": int, "total_tokens": int}``
     """

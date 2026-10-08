@@ -51,6 +51,21 @@ BASE_URL_ENV_SUFFIX = "BASE_URL"
 #: Env var suffix for overriding a provider's default model.
 MODEL_ENV_SUFFIX = "MODEL"
 
+#: Env var suffix for turning the streamed-usage request off. Self-hosted
+#: gateways built on older OpenAI-compatible servers reject the unknown
+#: ``stream_options`` field outright, so it has to be switchable per provider.
+STREAM_USAGE_ENV_SUFFIX = "STREAM_USAGE"
+
+_FALSEY = frozenset({"0", "false", "no", "off"})
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    """Read a boolean-ish environment variable, falling back to ``default``."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in _FALSEY
+
 
 class OpenAICompatibleProvider(LLMProvider):
     """Translate loca's types to/from the OpenAI Chat Completions protocol."""
@@ -69,6 +84,7 @@ class OpenAICompatibleProvider(LLMProvider):
         default_model: str | None = None,
         timeout: float = 60.0,
         client: Any | None = None,
+        stream_usage: bool | None = None,
     ) -> None:
         if not api_key:
             raise ValueError(
@@ -76,6 +92,18 @@ class OpenAICompatibleProvider(LLMProvider):
                 f"(set LOCA_{self.name.upper()}_API_KEY)."
             )
         self._default_model = default_model or self._env(MODEL_ENV_SUFFIX) or self.default_model
+        # Streaming OpenAI-compatible endpoints only report token usage when the
+        # request asks for it. Without this frame there is no usage at all, so
+        # ``loca report`` shows 0 tokens for every streamed call — which is how
+        # the "all three providers report usage" claim quietly stopped holding
+        # for this one. On by default, switchable for gateways that reject it.
+        self.stream_usage = (
+            stream_usage
+            if stream_usage is not None
+            else _env_flag(
+                f"LOCA_{self.name.upper()}_{STREAM_USAGE_ENV_SUFFIX}", default=True
+            )
+        )
         # ``client`` is injectable so tests can drive the parser with a fake
         # transport, exactly like the streaming regression tests do.
         self._client = client or OpenAI(
@@ -139,6 +167,8 @@ class OpenAICompatibleProvider(LLMProvider):
             "messages": [m.to_openai() for m in request.messages],
             "stream": stream,
         }
+        if stream and self.stream_usage:
+            payload["stream_options"] = {"include_usage": True}
         if request.tools:
             payload["tools"] = request.tools
         if request.temperature is not None:
@@ -166,14 +196,26 @@ class OpenAICompatibleProvider(LLMProvider):
         )
 
     def parse_stream_chunk(self, raw: Any) -> StreamChunk:
-        """Map one streamed delta onto a :class:`StreamChunk`."""
+        """Map one streamed delta onto a :class:`StreamChunk`.
+
+        ``finish_reason`` is only mapped when the provider actually sent one.
+        Every frame but the last carries ``None``, and a consumer that watches
+        ``finish_reason`` for end-of-stream — which
+        :mod:`loca.providers.types` documents as the contract — would otherwise
+        see ``ERROR`` on the very first frame and stop. Unknown *strings* are
+        still reported as :attr:`FinishReason.ERROR`.
+        """
         choice = raw.choices[0] if raw.choices else None
         delta = choice.delta if choice else None
         return StreamChunk(
             delta_content=getattr(delta, "content", "") or "",
             delta_reasoning=getattr(delta, "reasoning_content", "") or "",
             delta_tool_calls=[],  # assembled by stream_chat, never per-fragment
-            finish_reason=map_finish_reason(choice.finish_reason) if choice else None,
+            finish_reason=(
+                map_finish_reason(choice.finish_reason)
+                if choice is not None and choice.finish_reason
+                else None
+            ),
             usage=parse_usage(getattr(raw, "usage", None)),
         )
 
@@ -266,13 +308,25 @@ _FINISH_REASONS: dict[str, FinishReason] = {
 
 
 def map_finish_reason(raw: str | None) -> FinishReason:
-    """Map an OpenAI ``finish_reason`` onto loca's enum."""
+    """Map a ``finish_reason`` the provider actually sent onto loca's enum.
+
+    An unrecognised non-empty string is :attr:`FinishReason.ERROR` — something
+    stopped generation for a reason we do not model, and saying "stop" would be
+    a lie.
+
+    ``None`` is *not* a finish reason: it means "this frame says nothing about
+    why generation ended". This function has to return something, so ``None``
+    falls back to ``ERROR`` as well; callers on a streaming path must therefore
+    guard the call rather than lean on that default (see
+    :meth:`OpenAICompatibleProvider.parse_stream_chunk`).
+    """
     return _FINISH_REASONS.get(raw or "", FinishReason.ERROR)
 
 
 __all__ = [
     "BASE_URL_ENV_SUFFIX",
     "MODEL_ENV_SUFFIX",
+    "STREAM_USAGE_ENV_SUFFIX",
     "OpenAICompatibleProvider",
     "map_finish_reason",
     "parse_usage",

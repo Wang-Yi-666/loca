@@ -77,6 +77,35 @@ def test_long_lines_are_truncated(tool: ReadFileTool, ctx: ToolContext, workspac
     assert "x" * 5000 not in out.content
 
 
+def test_line_count_is_capped_and_paging_is_explained(
+    tool: ReadFileTool, ctx: ToolContext, workspace: Path
+) -> None:
+    """A 5,000-line file used to come back whole — 290,202 characters of it."""
+    _write(workspace / "log.txt", "\n".join(f"L{i}" for i in range(5_000)))
+    out = tool.execute({"path": "log.txt"}, ctx)
+
+    assert "total_lines=5000" in out.content
+    assert "showing=2000" in out.content
+    # A cap the model cannot get past is a dead end; say where to resume.
+    assert "re-read with start_line=2000" in out.content
+    assert len(out.content) < 40_000
+
+    page = tool.execute({"path": "log.txt", "start_line": 2000}, ctx)
+    assert f"{2000:6d}\tL2000" in page.content
+    assert f"{0:6d}\tL0" not in page.content
+
+
+def test_total_bytes_are_capped_even_when_every_line_is_legal(
+    tool: ReadFileTool, ctx: ToolContext, workspace: Path
+) -> None:
+    """The line count alone does not bound the payload — 100 legal long lines don't fit."""
+    _write(workspace / "wide.txt", "\n".join("y" * 3_900 for _ in range(100)))
+    out = tool.execute({"path": "wide.txt"}, ctx)
+
+    assert "truncated at" in out.content
+    assert len(out.content.encode("utf-8")) < 120_000
+
+
 # ---- error paths -----------------------------------------------------------
 
 
@@ -113,11 +142,15 @@ def test_non_utf8_file_reports_error(tool: ReadFileTool, ctx: ToolContext, works
 def test_path_outside_workspace_is_rejected(
     tool: ReadFileTool, ctx: ToolContext, workspace: Path
 ) -> None:
-    # Point at a real file outside the workspace.
-    secret = Path.home() / ".bashrc"
-    if not secret.exists():  # Windows may not have this file
-        pytest.skip("no .bashrc on this system")
-    out = tool.execute({"path": str(secret)}, ctx)
+    """Point at a real file outside the workspace.
+
+    The old version used ``Path.home()/".bashrc"`` and skipped when it was
+    missing — which is always, on the only platform loca supports. The
+    assertion never ran.
+    """
+    outside = workspace.parent / "outside-the-workspace.txt"
+    outside.write_text("secret", encoding="utf-8")
+    out = tool.execute({"path": str(outside)}, ctx)
     assert out.is_error
     assert "outside the workspace" in out.content
 
@@ -376,3 +409,49 @@ def test_edit_unknown_argument_rejected(
         edit_tool.execute(
             {"path": "x.txt", "find": "a", "replace": "b", "magic": 1}, ctx
         )
+
+
+def test_edit_keeps_lf_line_endings(
+    edit_tool: EditFileTool, ctx: ToolContext, workspace: Path
+) -> None:
+    """A one-line edit must not rewrite every line ending in the file.
+
+    ``Path.write_text`` defaults to ``newline=None``, which translates every
+    ``\\n`` to ``os.linesep``: the edit below used to turn an all-LF file into
+    an all-CRLF one, so ``git diff`` showed the whole file.
+    """
+    target = workspace / "lf.txt"
+    target.write_bytes(b"alpha\nbeta\ngamma\n")
+
+    out = edit_tool.execute({"path": "lf.txt", "find": "beta", "replace": "BETA"}, ctx)
+
+    assert not out.is_error
+    assert target.read_bytes() == b"alpha\nBETA\ngamma\n"
+
+
+def test_edit_keeps_crlf_line_endings(
+    edit_tool: EditFileTool, ctx: ToolContext, workspace: Path
+) -> None:
+    """The mirror case: writing with newline="" would have flattened a CRLF file."""
+    target = workspace / "crlf.txt"
+    target.write_bytes(b"alpha\r\nbeta\r\ngamma\r\n")
+
+    out = edit_tool.execute({"path": "crlf.txt", "find": "beta", "replace": "BETA"}, ctx)
+
+    assert not out.is_error
+    assert target.read_bytes() == b"alpha\r\nBETA\r\ngamma\r\n"
+
+
+def test_edit_matches_lf_find_against_a_crlf_file(
+    edit_tool: EditFileTool, ctx: ToolContext, workspace: Path
+) -> None:
+    """The model sees LF (read_file normalises), so `find` arrives with LF."""
+    target = workspace / "crlf.txt"
+    target.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+
+    out = edit_tool.execute(
+        {"path": "crlf.txt", "find": "one\ntwo", "replace": "one\ntwo\n1.5"}, ctx
+    )
+
+    assert not out.is_error
+    assert target.read_bytes() == b"one\r\ntwo\r\n1.5\r\nthree\r\n"

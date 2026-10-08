@@ -42,7 +42,19 @@
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
   header .sub { color: var(--muted); font-size: 12px; }
-  header .health { margin-left: auto; font-size: 12px; color: var(--muted); }
+  header .ws {
+    margin-left: auto; display: flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--muted);
+  }
+  header .ws input {
+    width: 250px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 4px 8px; font-size: 12px;
+    font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  }
+  header .ws input:focus { outline: none; border-color: var(--accent); }
+  header .ws input::placeholder { color: #5c637a; }
+  header .health { font-size: 12px; color: var(--muted); }
   header .health .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #56d97a; margin-right: 5px; }
   header .health.bad .dot { background: #ff6868; }
 
@@ -111,6 +123,18 @@
 
   .typing::after { content: "▍"; animation: blink 1s steps(1) infinite; color: var(--accent); }
   @keyframes blink { 50% { opacity: 0; } }
+
+  header .sess {
+    font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    font-size: 11.5px; color: var(--muted); white-space: nowrap;
+  }
+  .role .undo {
+    background: var(--panel-2); color: var(--link); border: 1px solid var(--border);
+    border-radius: 6px; padding: 1px 7px; font: inherit; font-size: 11px;
+    text-transform: none; letter-spacing: 0; cursor: pointer;
+  }
+  .role .undo:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+  .role .undo:disabled { opacity: 0.45; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -121,7 +145,14 @@
     <h1>loca</h1>
     <div class="sub">a coding-agent harness · streaming · 4 tools</div>
   </div>
+  <div class="ws">
+    <label for="workspace">workspace</label>
+    <input id="workspace" type="text" spellcheck="false" autocomplete="off"
+           placeholder="D:\Projects\repo"
+           title="Absolute Windows path the tools run in. It must already exist. This server listens on 127.0.0.1 only, so everything it can reach is already on this machine." />
+  </div>
   <div class="health" id="health"><span class="dot"></span><span id="health-text">checking…</span></div>
+  <div class="sess" id="session"></div>
 </header>
 
 <main id="messages"></main>
@@ -131,7 +162,8 @@
     <textarea id="input" rows="1" placeholder="Ask loca to do something… (Enter to send · Shift+Enter for newline)"></textarea>
     <button id="send" title="Send">➤</button>
   </div>
-  <div class="hint">Try: <em>List the files in the project and summarize pyproject.toml</em></div>
+  <div class="hint">Try: <em>List the files in the project and summarize pyproject.toml</em>
+    · file edits are checkpointed — press <strong>⛁ undo</strong> to put them back</div>
 </footer>
 
 <script>
@@ -140,18 +172,30 @@ const inputEl = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const healthText = document.getElementById("health-text");
 const healthEl = document.getElementById("health");
+const workspaceEl = document.getElementById("workspace");
+const sessionEl = document.getElementById("session");
 
 // History: simple in-memory list of {role, content}.
 let history = [];
 
+// Session id. The server mints one and streams it as the first event of the
+// first turn; we echo it back so the transcript and the checkpoint history stay
+// in the same row of the session database. Null = "ask for a new session".
+let sessionId = null;
+
+// Workspace the previous turn ran in, so that switching directories is
+// announced in the transcript instead of silently taking effect.
+let lastWorkspace = null;
+
 // -- health check -----------------------------------------------------------
 fetch("/api/health").then(r => r.json()).then(h => {
+  if (!workspaceEl.value) workspaceEl.value = h.default_workspace || "";
   const providers = h.providers_with_keys || [];
   if (providers.length === 0) {
     healthEl.classList.add("bad");
     healthText.textContent = "no API keys in .env";
   } else {
-    healthText.textContent = `${providers.join(", ")} ready · workspace ${h.default_workspace.split(/[\\\\/]/).pop()}`;
+    healthText.textContent = `${providers.join(", ")} ready`;
   }
 }).catch(() => {
   healthEl.classList.add("bad");
@@ -247,10 +291,81 @@ function appendNote(text) {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
+function setSession(id) {
+  sessionId = id || null;
+  sessionEl.textContent = id ? `session ${id}` : "";
+  sessionEl.title = id
+    ? `Session ${id} — read it back with:  loca sessions show ${id}  ·  undoes also work as loca rollback ${id} <step>`
+    : "";
+}
+
+// A checkpoint note is the only place that knows *and* can undo a file edit, so
+// it carries the button. The step is what the rollback command takes.
+function appendCheckpointNote(evt) {
+  const turn = el("div", "turn");
+  const n = el("div", "role");
+  const files = (evt.files || []).join(", ") || "nothing";
+  n.appendChild(document.createTextNode(
+    `⛁ checkpoint @ step ${evt.step} · ${files}${evt.restorable ? "" : " (not captured — too large to snapshot)"} `));
+  const undo = el("button", "undo", `↩ undo from step ${evt.step}`);
+  undo.title = `Restore every file this session edited from step ${evt.step} onward to how it looked before that step. Changes made by the shell tool cannot be undone.`;
+  undo.addEventListener("click", () => undoToStep(evt.step, undo));
+  n.appendChild(undo);
+  turn.appendChild(n);
+  messagesEl.appendChild(turn);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+async function undoToStep(step, button) {
+  if (!sessionId) {
+    appendNote("↩ no session yet — send a message first");
+    return;
+  }
+  const ok = window.confirm(
+    `Undo step ${step} and everything after it?\n\n` +
+    `Files this session wrote from step ${step} on are put back the way they ` +
+    `were before that step; files it created are deleted. ` +
+    `Changes made by the shell tool cannot be undone.`);
+  if (!ok) return;
+  button.disabled = true;
+  try {
+    const resp = await fetch("/api/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, step: step }),
+    });
+    const out = await resp.json();
+    if (!out.ok) {
+      appendNote(`↩ ${out.message}`);
+      return;
+    }
+    const parts = (out.files || []).map(f =>
+      f.action === "restored" ? `restored ${f.path}`
+        : f.action === "deleted" ? `deleted ${f.path} (did not exist before that step)`
+          : `skipped ${f.path}`);
+    appendNote(`↩ undid ${out.applied} checkpoint(s) from step ${out.step} · ` +
+      (parts.length ? parts.join(" · ") : "the workspace already matched the snapshots"));
+    if (out.skipped && out.skipped.length) {
+      appendNote(`↩ skipped: ${out.skipped.join(", ")}`);
+    }
+    appendNote("↩ the messages above still show the undone edit — what changed is the files on disk");
+  } catch (err) {
+    appendNote(`↩ rollback failed: ${err.message}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 // -- streaming --------------------------------------------------------------
 async function send() {
   const text = inputEl.value.trim();
   if (!text) return;
+  const ws = workspaceEl.value.trim();
+  if (ws && ws !== lastWorkspace) {
+    // Announce it: a stale value must not silently redirect the tools.
+    appendNote(`workspace · ${ws}`);
+    lastWorkspace = ws;
+  }
   appendUserTurn(text);
   history.push({ role: "user", content: text });
   inputEl.value = "";
@@ -258,6 +373,7 @@ async function send() {
 
   const { turn, bubble } = appendAssistantTurn();
   let acc = "";
+  let reasoning = "";
   let currentToolCard = null;
   let lastArgs = null;
   let lastName = null;
@@ -267,7 +383,12 @@ async function send() {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, history: history.slice(0, -1) }),
+      body: JSON.stringify({
+        message: text,
+        history: history.slice(0, -1),
+        workspace: ws || null,
+        session_id: sessionId,
+      }),
     });
     if (!resp.ok) {
       bubble.classList.remove("typing");
@@ -306,11 +427,25 @@ async function send() {
     inputEl.focus();
   }
 
+  function flushReasoning() {
+    const text = reasoning.trim();
+    reasoning = "";
+    if (text) appendNote(`thinking · ${text.length > 400 ? text.slice(0, 400) + "…" : text}`);
+  }
+
   function handle(evt) {
-    if (evt.type === "text") {
+    if (evt.type === "session") {
+      setSession(evt.id);
+    } else if (evt.type === "text") {
+      flushReasoning();
       acc += evt.content;
       bubble.innerHTML = renderText(acc);
       messagesEl.scrollTop = messagesEl.scrollHeight;
+    } else if (evt.type === "reasoning") {
+      // Thinking arrives token by token on the same stream as the reply. Buffer
+      // it and post one note when the visible answer starts — a note per token
+      // would bury the conversation.
+      reasoning += evt.content;
     } else if (evt.type === "tool_call") {
       lastName = evt.name;
       lastArgs = evt.args;
@@ -320,6 +455,7 @@ async function send() {
     } else if (evt.type === "usage") {
       usageInfo = evt;
     } else if (evt.type === "done") {
+      flushReasoning();
       // Append a footer with stats.
       const stats = [
         `steps: ${evt.steps}`,
@@ -336,9 +472,11 @@ async function send() {
     } else if (evt.type === "context_summarized") {
       appendNote(`context compacted · ${evt.summarized} old message(s) folded into a summary (~${evt.summary_tokens} tokens) · ~${evt.estimated_tokens}/${evt.budget} tokens`);
     } else if (evt.type === "checkpoint") {
-      appendNote(`⛁ checkpoint @ step ${evt.step} · ${(evt.files || []).join(", ") || "nothing"}${evt.restorable ? "" : " (not restorable)"}`);
+      appendCheckpointNote(evt);
     } else if (evt.type === "recovery") {
-      appendNote(`recovering · ${evt.reason} · asking the model to continue`);
+      appendNote(evt.reason === "length"
+        ? "output cap reached · asking the model to continue"
+        : `transient provider failure · ${evt.detail || evt.reason} · retrying`);
     } else if (evt.type === "error") {
       bubble.classList.remove("typing");
       appendError(evt.message, evt.retryable);

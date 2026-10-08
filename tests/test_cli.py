@@ -311,6 +311,48 @@ def test_sessions_rm_deletes_the_session(
         assert store.get_session("s1") is None
 
 
+def test_sessions_rm_reports_the_counts_it_really_removed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The checkpoint count was read *after* the cascade, so it always said 0."""
+    from loca.observability import CheckpointManager, SessionStore
+
+    db, workspace = tmp_path / "s.db", tmp_path / "ws"
+    workspace.mkdir()
+    _seed_session(db, workspace)
+    with SessionStore(db) as store:
+        CheckpointManager(store).capture(
+            session_id="s1",
+            step=0,
+            tool="write_file",
+            arguments={"path": "a.py", "content": "x"},
+            workspace=workspace,
+        )
+
+    assert main(["sessions", "rm", "s1", "--db", str(db)]) == 0
+
+    assert "1 checkpoint(s) removed" in capsys.readouterr().out
+
+
+def test_sessions_rm_also_removes_the_jsonl_trace_mirror(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Otherwise ``loca report`` reads a session the CLI said it had deleted."""
+    from loca.observability.trace import trace_jsonl_path
+
+    db, workspace = tmp_path / "s.db", tmp_path / "ws"
+    workspace.mkdir()
+    _seed_session(db, workspace)
+    mirror = trace_jsonl_path("s1", db_path=db)
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    mirror.write_text('{"session_id": "s1", "step": 0}\n', encoding="utf-8")
+
+    assert main(["sessions", "rm", "s1", "--db", str(db)]) == 0
+
+    assert not mirror.exists()
+    assert "jsonl mirror removed" in capsys.readouterr().out
+
+
 def test_rollback_restores_files_from_a_checkpoint(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -366,8 +408,120 @@ def test_repl_help_and_unknown_commands(tmp_path: Path) -> None:
 
     assert _handle_repl_command("/help", console) is True
     assert "/compact" in buf.getvalue()
+    assert "/rollback" in buf.getvalue()
     assert _handle_repl_command("/nope", console) is True
     assert "unknown command" in buf.getvalue()
+
+
+def _store_with_one_edit(tmp_path: Path) -> tuple[Path, Any]:
+    """A session whose one checkpoint saw ``greet.py`` before a rewrite."""
+    from loca.observability import CheckpointManager, SessionStore
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = workspace / "greet.py"
+    target.write_text("print('before')\n", encoding="utf-8")
+
+    store = SessionStore(tmp_path / "s.db")
+    store.create_session("s1", workspace=workspace)
+    CheckpointManager(store).capture(
+        session_id="s1",
+        step=3,
+        tool="write_file",
+        arguments={"path": "greet.py", "content": "print('after')"},
+        workspace=workspace,
+    )
+    target.write_text("print('after')\n", encoding="utf-8")
+    return workspace, store
+
+
+def test_repl_rollback_undoes_the_last_file_edit(tmp_path: Path) -> None:
+    """Bare ``/rollback`` means "undo what you just did".
+
+    The command is the whole point of the REPL branch: the previous way to undo
+    was to leave the session, read a step number off `loca sessions show`, and
+    run `loca rollback` in a second process.
+    """
+    from loca.cli import _handle_repl_command
+
+    workspace, store = _store_with_one_edit(tmp_path)
+    try:
+        console, buf = _console()
+        handled = _handle_repl_command(
+            "/rollback", console, store=store, session_id="s1", workspace=workspace
+        )
+
+        assert handled is True
+        out = buf.getvalue()
+        assert "restored greet.py" in out
+        assert "1 checkpoint(s) applied" in out
+        assert "shell tool cannot be rolled back" in out
+        assert (workspace / "greet.py").read_text(encoding="utf-8") == "print('before')\n"
+    finally:
+        store.close()
+
+
+def test_repl_rollback_takes_an_explicit_step(tmp_path: Path) -> None:
+    from loca.cli import _handle_repl_command
+
+    workspace, store = _store_with_one_edit(tmp_path)
+    try:
+        console, buf = _console()
+        _handle_repl_command(
+            "/rollback 2", console, store=store, session_id="s1", workspace=workspace
+        )
+
+        # Step 3 is at or after step 2, so it is undone too.
+        assert "restored greet.py" in buf.getvalue()
+        assert (workspace / "greet.py").read_text(encoding="utf-8") == "print('before')\n"
+    finally:
+        store.close()
+
+
+def test_repl_rollback_out_of_range_says_so(tmp_path: Path) -> None:
+    from loca.cli import _handle_repl_command
+
+    workspace, store = _store_with_one_edit(tmp_path)
+    try:
+        console, buf = _console()
+        handled = _handle_repl_command(
+            "/rollback 99", console, store=store, session_id="s1", workspace=workspace
+        )
+
+        assert handled is True
+        assert "nothing to undo at step 99 or later" in buf.getvalue()
+        # Nothing was touched.
+        assert (workspace / "greet.py").read_text(encoding="utf-8") == "print('after')\n"
+    finally:
+        store.close()
+
+
+def test_repl_rollback_rejects_a_non_number(tmp_path: Path) -> None:
+    from loca.cli import _handle_repl_command
+
+    workspace, store = _store_with_one_edit(tmp_path)
+    try:
+        console, buf = _console()
+        handled = _handle_repl_command(
+            "/rollback soon", console, store=store, session_id="s1", workspace=workspace
+        )
+
+        assert handled is True
+        assert "not a step number" in buf.getvalue()
+        assert (workspace / "greet.py").read_text(encoding="utf-8") == "print('after')\n"
+    finally:
+        store.close()
+
+
+def test_repl_rollback_without_a_session_says_so(tmp_path: Path) -> None:
+    """``--no-save`` means no store, so there is no undo history either."""
+    from loca.cli import _handle_repl_command
+
+    console, buf = _console()
+    handled = _handle_repl_command("/rollback", console)
+
+    assert handled is True
+    assert "no session" in buf.getvalue()
 
 
 def test_repl_compact_command(tmp_path: Path) -> None:

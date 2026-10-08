@@ -157,7 +157,10 @@ class RollbackReport:
     applied_checkpoints: int
     restored: list[str] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
-    skipped: list[str] = field(default_factory=list)
+    #: ``(path, reason)`` per skip. Kept as pairs rather than pre-rendered
+    #: strings so callers never have to parse a path back out of a message —
+    #: file names are allowed to contain ``" ("``.
+    skips: list[tuple[str, str]] = field(default_factory=list)
     #: ``(action, path)`` in the order applied. Several checkpoints can touch
     #: the same file (edit it twice → undo both), so callers should report
     #: :meth:`settled` rather than the raw lists.
@@ -167,11 +170,21 @@ class RollbackReport:
     def changed(self) -> bool:
         return bool(self.restored or self.deleted)
 
+    @property
+    def skipped(self) -> list[str]:
+        """Skipped files, rendered as ``"path (reason)"`` for humans."""
+        return [f"{path} ({reason})" for path, reason in self.skips]
+
     def settled(self) -> dict[str, str]:
-        """Final action per file: ``restored``, ``deleted`` or ``skipped``."""
+        """Final action per file: ``restored``, ``deleted`` or ``skipped``.
+
+        Built from :attr:`actions`, whose paths are the raw workspace-relative
+        ones. :attr:`skipped` renders the same paths with a reason attached, so
+        it must not be used as the key source.
+        """
         final: dict[str, str] = {}
         for action, path in self.actions:
-            final[path.split(" (", 1)[0]] = action
+            final[path] = action
         return final
 
 
@@ -235,6 +248,10 @@ class CheckpointManager:
 
         Returns ``None`` when there is nothing to snapshot (the tool is not
         tracked, or every path it named is unusable/outside the workspace).
+
+        Never raises. Checkpointing is an observer: a store that is locked,
+        full or mid-repair must not turn "no snapshot could be taken" into "the
+        agent stopped working". Failures are logged and degrade to ``None``.
         """
         raw_paths = self.paths_for(tool, arguments)
         if not raw_paths:
@@ -261,9 +278,13 @@ class CheckpointManager:
             created_at=utcnow(),
             snapshots=snapshots,
         )
-        self.store.save_checkpoint(
-            session_id, step=step, tool=tool, payload=checkpoint.to_dict()
-        )
+        try:
+            self.store.save_checkpoint(
+                session_id, step=step, tool=tool, payload=checkpoint.to_dict()
+            )
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            _log.warning("could not persist checkpoint for %s: %s", tool, exc)
+            return None
         return checkpoint
 
     def _snapshot(self, root: Path, target: Path) -> FileSnapshot:
@@ -285,7 +306,15 @@ class CheckpointManager:
             )
             return FileSnapshot(path=rel, existed=True, size=size, encoding=UNAVAILABLE)
 
-        raw = target.read_bytes()
+        try:
+            raw = target.read_bytes()
+        except OSError as exc:
+            # ``stat()`` and ``read_bytes()`` are two syscalls: the file can be
+            # deleted or lose its permissions in between. A checkpoint is an
+            # observer — it must never be the thing that aborts a run, so a
+            # failed read degrades to "recorded but not restorable".
+            _log.warning("cannot read %s for checkpoint: %s", rel, exc)
+            return FileSnapshot(path=rel, existed=True, size=size, encoding=UNAVAILABLE)
         try:
             return FileSnapshot(
                 path=rel,
@@ -316,11 +345,19 @@ class CheckpointManager:
 
         Newest checkpoint first, so the earliest undone step's pre-state is the
         one that survives — the file ends up as it was before ``step`` ran.
+
+        The ordering key is ``(step, id)``, not ``step`` alone. Several
+        checkpoints legitimately share a step: one model reply can call
+        ``write_file`` twice on the same path (the loop captures each call with
+        the same ``global_step``), and a crash mid-turn makes the restart reuse
+        the step. Sorting on ``step`` alone leaves those in insertion order —
+        oldest first — which applies the *oldest* pre-state first and lets the
+        newest one win, the exact opposite of the documented semantics.
         """
         rows: list[CheckpointRow] = [
             r for r in self.store.list_checkpoints(session_id) if r.step >= step
         ]
-        rows.sort(key=lambda r: r.step, reverse=True)
+        rows.sort(key=lambda r: (r.step, r.id), reverse=True)
 
         report = RollbackReport(
             session_id=session_id, step=step, applied_checkpoints=len(rows)
@@ -347,12 +384,12 @@ class CheckpointManager:
         self, root: Path | None, snapshot: FileSnapshot, report: RollbackReport
     ) -> None:
         if root is None:
-            report.skipped.append(f"{snapshot.path} (no workspace recorded)")
+            report.skips.append((snapshot.path, "no workspace recorded"))
             report.actions.append(("skipped", snapshot.path))
             return
         target = resolve_within_workspace(root, snapshot.path)
         if target is None:
-            report.skipped.append(f"{snapshot.path} (outside workspace)")
+            report.skips.append((snapshot.path, "outside workspace"))
             report.actions.append(("skipped", snapshot.path))
             return
 
@@ -363,13 +400,13 @@ class CheckpointManager:
                     report.deleted.append(snapshot.path)
                     report.actions.append(("deleted", snapshot.path))
             except OSError as exc:  # pragma: no cover - permission or lock
-                report.skipped.append(f"{snapshot.path} ({exc})")
+                report.skips.append((snapshot.path, str(exc)))
                 report.actions.append(("skipped", snapshot.path))
             return
 
         payload = snapshot.restore_bytes()
         if payload is None:
-            report.skipped.append(f"{snapshot.path} (not captured)")
+            report.skips.append((snapshot.path, "not captured"))
             report.actions.append(("skipped", snapshot.path))
             return
         try:
@@ -378,13 +415,8 @@ class CheckpointManager:
             report.restored.append(snapshot.path)
             report.actions.append(("restored", snapshot.path))
         except OSError as exc:  # pragma: no cover - permission or lock
-            report.skipped.append(f"{snapshot.path} ({exc})")
+            report.skips.append((snapshot.path, str(exc)))
             report.actions.append(("skipped", snapshot.path))
-
-    # ---- introspection ----------------------------------------------------
-
-    def list_checkpoints(self, session_id: str) -> list[Checkpoint]:
-        return [Checkpoint.from_dict(r.payload) for r in self.store.list_checkpoints(session_id)]
 
 
 # ---------------------------------------------------------------------------

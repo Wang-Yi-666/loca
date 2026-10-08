@@ -27,6 +27,7 @@ hidden, because "the benchmark says it timed out at 300s but really it hung for
 
 from __future__ import annotations
 
+import logging
 import shutil
 import time
 from collections import Counter
@@ -36,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from loca.core.context import ContextManager, provider_summarizer
+from loca.agents import CODING_AGENT, build_agent
 from loca.core.events import EventType
 from loca.core.loop import DEFAULT_TOKEN_BUDGET, AgentLoop
 from loca.eval.tasks import (
@@ -48,8 +49,9 @@ from loca.eval.tasks import (
 )
 from loca.observability.storage import SessionStore
 from loca.providers.base import LLMProvider
-from loca.tools.base import ToolContext
 from loca.tools.registry import all_tools
+
+_log = logging.getLogger("loca.benchmark")
 
 #: How an attempt ended. ``passed`` and ``wrong_answer`` both mean the loop ran
 #: to completion; the rest are failures with a distinct cause, and keeping them
@@ -92,7 +94,10 @@ class TaskResult:
     completion_tokens: int = 0
     tool_calls: int = 0
     tool_errors: int = 0
-    recoveries: int = 0
+    #: Transient provider failures the retry wrapper absorbed.
+    retries: int = 0
+    #: Times the model was asked to continue after hitting the output cap.
+    continuations: int = 0
     duration_s: float = 0.0
     session_id: str = ""
     sandbox: str = ""
@@ -123,6 +128,8 @@ class TaskResult:
             "completion_tokens": self.completion_tokens,
             "tool_calls": self.tool_calls,
             "tool_errors": self.tool_errors,
+            "retries": self.retries,
+            "continuations": self.continuations,
             "duration_s": round(self.duration_s, 2),
             "session_id": self.session_id,
             "detail": self.detail,
@@ -300,6 +307,21 @@ class BenchmarkError(Exception):
     """The run could not start (bad provider, bad task selection, …)."""
 
 
+def _resolve_model(provider_factory: Callable[[], LLMProvider]) -> str | None:
+    """Ask a throwaway provider what model it would use by default.
+
+    Best effort, and deliberately not fatal: the probe exists only so the report
+    can name what it measured. If it fails, the attempts themselves will report
+    the real error as their outcome, which is a far more useful signal than
+    aborting the whole run over a missing label.
+    """
+    try:
+        return provider_factory().resolved_model
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        _log.warning("could not resolve the provider's default model: %s", exc)
+        return None
+
+
 # ---- one attempt ------------------------------------------------------------
 
 
@@ -327,11 +349,14 @@ def run_attempt(
     is also captured, as ``grader_error``, so one broken task cannot abort a
     whole benchmark run.
 
-    Context budgeting mirrors ``loca chat``: a :class:`ContextManager` is
-    attached whenever ``token_budget`` is positive, with or without a session
-    store. Persistence and budgeting are separate concerns, and a benchmark that
-    silently disabled compaction when ``store_path`` was omitted would measure a
-    configuration nobody actually runs.
+    The agent is assembled by :func:`loca.agents.build_agent` — the same call
+    ``loca chat`` and the web UI make — so the score describes the agent that
+    ships. Context budgeting is part of that assembly: a
+    :class:`~loca.core.context.ContextManager` is attached whenever
+    ``token_budget`` is positive, with or without a session store. Persistence
+    and budgeting are separate concerns, and a benchmark that silently disabled
+    compaction when ``store_path`` was omitted would measure a configuration
+    nobody actually runs.
     """
     started = time.monotonic()
     session_id = f"bench-{task.id}-a{attempt}"
@@ -360,24 +385,28 @@ def run_attempt(
             store = SessionStore(store_path)
 
         provider = provider_factory()
-        loop = AgentLoop(
+        # Assemble the agent the same way `loca chat` and the web UI do, so a
+        # score describes the agent that actually ships rather than a
+        # benchmark-only configuration. The one deliberate difference is
+        # `tools`: an evaluation run may inject its own set.
+        runtime = build_agent(
+            CODING_AGENT,
             provider=provider,
+            workspace=sandbox,
+            session_id=session_id,
+            store=store,
+            # Each attempt gets a fresh sandbox and a fresh session id, so its
+            # checkpoints start at 0 — nothing to resume.
+            step_index=0,
             tools=tool_list,
-            max_steps=limit,
-            # The context manager below owns the budget when it is attached;
-            # keeping the loop's own trim path off avoids two policies fighting.
-            context_token_budget=None,
             system_prompt=system_prompt,
+            max_steps=limit,
+            token_budget=token_budget,
+            keep_recent=keep_recent,
+            provider_name=provider_name,
+            trace=trace,
         )
-        if token_budget > 0:
-            loop.context_manager = ContextManager(
-                budget=token_budget,
-                keep_recent=keep_recent,
-                model=model,
-                # Summarize with the loop's own provider, so a compaction call
-                # gets the same retry policy as everything else.
-                summarizer=provider_summarizer(loop.provider, model=model),
-            )
+        loop, ctx, recorder = runtime.loop, runtime.ctx, runtime.recorder
         if store is not None:
             # The row has to exist before a transcript can be saved; the CLI
             # does the same thing before it starts a session.
@@ -387,18 +416,6 @@ def run_attempt(
                 provider=provider_name or getattr(provider, "name", ""),
                 model=model,
             )
-        if trace:
-            from loca.observability.trace import TraceRecorder
-
-            recorder = TraceRecorder(
-                session_id,
-                store=store,
-                provider=provider_name or getattr(provider, "name", ""),
-                model=model,
-                prompt_source=lambda: loop.last_transcript if loop else [],
-            )
-
-        ctx = ToolContext(workspace=sandbox, session_id=session_id, step_index=0)
 
         timed_out = False
         error_message: str | None = None
@@ -406,10 +423,6 @@ def run_attempt(
         for event in loop.run(ctx, task.prompt):
             if recorder is not None:
                 recorder.observe(event)
-
-            if time.monotonic() - started > deadline_s:
-                timed_out = True
-                break
 
             if event.type is EventType.DONE:
                 data = event.data
@@ -423,10 +436,26 @@ def run_attempt(
                 if event.data.get("is_error"):
                     result.tool_errors += 1
             elif event.type is EventType.RECOVERY:
-                result.recoveries += 1
+                # Two things share this event: the loop's "carry on after the
+                # output cap" nudge, and a transient provider failure the retry
+                # wrapper absorbed. They are counted apart — a truncated reply
+                # is not a provider fault, and a benchmark that conflated them
+                # could not tell "the model rambles" from "the network wobbles".
+                if event.data.get("reason") == "length":
+                    result.continuations += 1
+                else:
+                    result.retries += 1
             elif event.type is EventType.USAGE:
                 result.prompt_tokens += int(event.data.get("prompt_tokens", 0))
                 result.completion_tokens += int(event.data.get("completion_tokens", 0))
+
+            if time.monotonic() - started > deadline_s:
+                # Consume the event, *then* stop. A turn that finished just past
+                # the deadline is a finished turn, not a timeout: checking
+                # before the DONE branch threw its result away and recorded
+                # steps=0 / tokens=0 for a run that had done the work.
+                timed_out = finish_reason is None
+                break
 
         if store is not None:
             store.set_next_step(session_id, ctx.step_index)
@@ -493,9 +522,10 @@ def run_benchmark(
 ) -> BenchmarkReport:
     """Run every task ``attempts`` times across a thread pool.
 
-    ``workdir`` gets one subdirectory per attempt; it is removed at the end
-    unless ``keep`` is set (or the run crashed, in which case it is left alone
-    so the failure can be inspected).
+    ``workdir`` gets one subdirectory per attempt. It is removed at the end
+    unless ``keep`` is set — *including* when the run itself failed, so pass
+    ``keep=True`` when you need the sandboxes of a broken run. (This docstring
+    used to promise the opposite of what the ``finally`` block did.)
     """
     if tasks is None:
         tasks = load_tasks()
@@ -504,6 +534,12 @@ def run_benchmark(
         raise BenchmarkError("no tasks selected")
     if attempts < 1:
         raise BenchmarkError("attempts must be at least 1")
+
+    # The report has to name the model it measured. ``--model`` is usually
+    # unset, and a ``"model": null`` in an archived run leaves the evidence
+    # unable to state what produced it.
+    if model is None:
+        model = _resolve_model(provider_factory)
 
     # Registering into the global registry once, up front, keeps the worker
     # threads from racing to do it (and from mutating it mid-run).
@@ -601,7 +637,7 @@ def compare(reports: Iterable[BenchmarkReport]) -> list[dict[str, Any]]:
 class TaskIntegrity:
     """Whether a task behaves the way a task has to behave.
 
-    Two properties are checked, and both matter:
+    Three properties are checked, and all of them matter:
 
     ``fails_on_seed``
         The grader rejects the starting workspace. A task whose grader already
@@ -609,6 +645,10 @@ class TaskIntegrity:
     ``passes_with_solution``
         The grader accepts the reference answer. A task whose grader rejects
         the intended fix is unsolvable, and every failure it reports is noise.
+    ``has_solution``
+        There is a reference answer to run in the first place. Without this,
+        the previous two are vacuous for that task: "the reference solution
+        passes" cannot be checked, and not-checked was quietly scored as fine.
     """
 
     task_id: str
@@ -621,10 +661,18 @@ class TaskIntegrity:
 
     @property
     def ok(self) -> bool:
-        return self.fails_on_seed and self.passes_with_solution is not False and not self.error
+        """Healthy on all three counts.
+
+        ``passes_with_solution is True``, not ``is not False``: a task with no
+        ``solution/`` directory leaves the field ``None``, and letting that
+        count as a pass is how a task set reports "all 36 check out" while
+        containing tasks nobody can demonstrate are solvable.
+        """
+        return self.fails_on_seed and self.passes_with_solution is True and not self.error
 
     @property
     def has_solution(self) -> bool:
+        """Did the task ship a reference answer at all?"""
         return self.passes_with_solution is not None
 
 
@@ -638,6 +686,10 @@ def verify_task_set(
 
     This is the task set's own test suite. It runs without any provider, so it
     is cheap and can be part of ordinary maintenance.
+
+    A task with no ``solution/`` directory fails the check rather than being
+    skipped: the whole point is to demonstrate that the task is solvable, and
+    "we never checked" is not a demonstration.
     """
     if tasks is None:
         tasks = load_tasks()

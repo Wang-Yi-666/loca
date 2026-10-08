@@ -7,6 +7,7 @@ of ``true`` and ``cd`` instead of ``pwd``.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -54,16 +55,37 @@ def test_format_command_doubles_embedded_quotes() -> None:
     assert _format_command('echo "hi"') == '"echo ""hi"""'
 
 
-def test_shell_executable_is_always_cmd(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A COMSPEC pointing at PowerShell must not change the shell."""
+def test_shell_executable_is_always_an_absolute_cmd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A COMSPEC pointing at PowerShell must not change the shell — or break it."""
     monkeypatch.setenv("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
     assert _shell_executable().lower().endswith("cmd.exe")
 
     monkeypatch.setenv("COMSPEC", "C:\\Program Files\\PowerShell\\7\\pwsh.exe")
-    assert _shell_executable().lower() == "cmd.exe"
+    resolved = _shell_executable()
+    assert resolved.lower().endswith("cmd.exe")
+    # Absolute on purpose: `executable=` becomes CreateProcess's
+    # lpApplicationName, which is not searched on PATH. A bare "cmd.exe" used
+    # to be returned here and failed with WinError 2 in exactly this case.
+    assert Path(resolved).is_absolute()
+    assert Path(resolved).is_file()
 
     monkeypatch.delenv("COMSPEC", raising=False)
-    assert _shell_executable().lower() == "cmd.exe"
+    assert Path(_shell_executable()).is_absolute()
+
+
+def test_hostile_comspec_still_runs_commands(
+    tool: ShellTool, ctx: ToolContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of pinning cmd.exe is that the agent keeps working.
+
+    Asserting on the returned string alone never proved that — the old
+    fallback passed that assertion and then could not execute anything.
+    """
+    monkeypatch.setenv("COMSPEC", "C:\\Program Files\\PowerShell\\7\\pwsh.exe")
+    out = tool.execute({"command": "echo alive"}, ctx)
+    assert not out.is_error
+    assert "exit_code=0" in out.content
+    assert "alive" in out.content
 
 
 def test_exit_code_nonzero_is_error(tool: ShellTool, ctx: ToolContext) -> None:
@@ -129,6 +151,45 @@ def test_timeout_is_respected(tool: ShellTool, ctx: ToolContext) -> None:
     )
     assert out.is_error
     assert "timed out" in out.content.lower()
+
+
+def test_timeout_is_a_hard_bound_even_with_grandchildren(
+    tool: ShellTool, ctx: ToolContext
+) -> None:
+    """The declared timeout must not stretch to however long a grandchild lives.
+
+    ``shell=True`` makes cmd.exe the direct child, and the python it spawns
+    inherits the stdout pipe. Killing only the interpreter left the readers
+    blocked on that pipe, so a declared 2 seconds took 8 — and an agent loop is
+    synchronous, so that is the whole session hanging.
+    """
+    nested = _python(
+        "import subprocess, sys; "
+        "subprocess.call([sys.executable, '-c', 'import time; time.sleep(20)'])"
+    )
+    started = time.monotonic()
+    out = tool.execute({"command": nested, "timeout": 2}, ctx)
+    elapsed = time.monotonic() - started
+
+    assert out.is_error
+    assert "timed out" in out.content.lower()
+    assert "process tree" in out.content
+    assert elapsed < 10, f"timeout did not bound the run: {elapsed:.1f}s"
+
+
+def test_timed_out_output_is_truncated_too(
+    tool: ShellTool, ctx: ToolContext
+) -> None:
+    """The timeout path must not be a way around the output caps."""
+    noisy = _python(
+        "import sys, time; "
+        "sys.stdout.write('y' * 40000); sys.stdout.flush(); time.sleep(20)"
+    )
+    out = tool.execute({"command": noisy, "timeout": 2}, ctx)
+    assert out.is_error
+    assert "timed out" in out.content.lower()
+    assert "truncated" in out.content.lower()
+    assert len(out.content) < 40_000
 
 
 def test_output_is_truncated_when_huge(

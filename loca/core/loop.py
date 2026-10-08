@@ -38,12 +38,11 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loca.core.context import ContextManager
 from loca.core.events import AgentEvent, EventType
 from loca.core.recovery import RetryingProvider, is_transient, trim_messages
-from loca.observability.checkpoint import CheckpointManager
 from loca.providers.base import LLMProvider
 from loca.providers.types import (
     ChatRequest,
@@ -55,6 +54,14 @@ from loca.tools.base import Tool, ToolContext, ToolResult
 from loca.tools.registry import all_tools
 from loca.tools.validation import SchemaValidationError, validate_arguments
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # The loop needs "something that can capture a snapshot", not the concrete
+    # manager: it calls exactly one method on it (``capture``). Importing the
+    # class at runtime made core depend on observability while observability
+    # already depends on core's event model — a cycle held together by an
+    # annotation. Same reason the provider layer talks to an ABC.
+    from loca.observability.checkpoint import CheckpointManager
+
 # 64k tokens is DeepSeek's window; keep headroom for the model's own reply.
 DEFAULT_TOKEN_BUDGET = 48_000
 
@@ -62,12 +69,14 @@ DEFAULT_TOKEN_BUDGET = 48_000
 class AgentLoop:
     """Drive a multi-step agent conversation."""
 
+    #: Last-resort prompt for a loop built without one. Deliberately says
+    #: nothing about coding, Windows, or a particular toolset: that is
+    #: *policy*, and policy belongs to an agent definition — see
+    #: :data:`loca.agents.CODING_AGENT`, which every entry point in this
+    #: project uses instead of relying on this.
     DEFAULT_SYSTEM_PROMPT = (
-        "You are loca, a coding assistant running on Windows. You have access "
-        "to filesystem and shell tools. Use them to answer the user's request. "
-        "All paths are Windows paths (e.g. D:\\Projects\\repo). The shell is "
-        "cmd.exe, so use Windows commands (dir, type, del, findstr) rather "
-        "than POSIX ones (ls, cat, rm, grep). Be concise."
+        "You are a helpful assistant. Use the tools available to you when they "
+        "help answer the user's request. Be concise."
     )
 
     #: Sent as a user turn when the model's answer was truncated by the output
@@ -115,8 +124,17 @@ class AgentLoop:
             Injected so tests can run the retry path without real delays.
         """
         self._raw_provider = provider
+        #: Transient failures the retry wrapper has absorbed. The wrapper has
+        #: always offered this hook; nothing consumed it, so every "retries"
+        #: column in a report was really counting continuations.
+        self._retry_notes: list[str] = []
         self.provider: LLMProvider = (
-            RetryingProvider(provider, max_attempts=retries + 1, sleep=sleep)
+            RetryingProvider(
+                provider,
+                max_attempts=retries + 1,
+                sleep=sleep,
+                on_retry=self._note_retry,
+            )
             if retries > 0
             else provider
         )
@@ -192,7 +210,6 @@ class AgentLoop:
                 tools=tool_schemas,
                 model=self.model,
                 temperature=self.temperature,
-                stream=True,
             )
 
             # Accumulate streamed response. Providers (see ``DeepSeekProvider``)
@@ -206,6 +223,10 @@ class AgentLoop:
 
             try:
                 for chunk in self.provider.stream_chat(request):
+                    if self._retry_notes:
+                        # A retry only ever happens before the first chunk, so
+                        # surface it ahead of anything the model produced.
+                        yield from self._retry_events(step)
                     if chunk.delta_content:
                         text += chunk.delta_content
                         yield AgentEvent(
@@ -214,6 +235,16 @@ class AgentLoop:
                         )
                     if chunk.delta_reasoning:
                         reasoning += chunk.delta_reasoning
+                        # Same channel as the visible reply — it is a streamed
+                        # delta either way — but a separate key, so the trace
+                        # can record what the model was thinking without mixing
+                        # it into the answer. Emitted only when there is
+                        # something to say: a consumer that renders `content`
+                        # never gets an empty bubble.
+                        yield AgentEvent(
+                            type=EventType.TEXT_DELTA,
+                            data={"content": "", "reasoning": chunk.delta_reasoning},
+                        )
                     if chunk.delta_tool_calls:
                         tool_calls.extend(chunk.delta_tool_calls)
                     if chunk.usage is not None:
@@ -230,6 +261,9 @@ class AgentLoop:
                 # malformed request. Report it as an event instead of letting
                 # the exception escape, so an SSE transport stays well-formed
                 # and the caller learns *why* the turn stopped.
+                # Flush first: the retries that were absorbed before the final
+                # failure belong to this step, and a trace should say so.
+                yield from self._retry_events(step)
                 yield AgentEvent(
                     type=EventType.ERROR,
                     data={
@@ -393,6 +427,23 @@ class AgentLoop:
             return False
         self.last_transcript[:] = messages
         return True
+
+    # ---- transient-failure reporting --------------------------------------
+
+    def _note_retry(self, attempt: int, delay: float, exc: BaseException) -> None:
+        """Record one absorbed transient failure (the wrapper's ``on_retry``)."""
+        self._retry_notes.append(
+            f"attempt {attempt}, backoff {delay:.2f}s: {type(exc).__name__}: {exc}"
+        )
+
+    def _retry_events(self, step: int) -> Iterator[AgentEvent]:
+        """Surface the retries absorbed since the last flush, then forget them."""
+        notes, self._retry_notes = self._retry_notes, []
+        for note in notes:
+            yield AgentEvent(
+                type=EventType.RECOVERY,
+                data={"reason": "provider_retry", "detail": note, "step": step},
+            )
 
     def _capture_checkpoint(
         self, call: Any, ctx: ToolContext, *, step: int

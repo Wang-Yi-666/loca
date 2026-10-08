@@ -102,7 +102,7 @@ def _wrapped(scripts: list[list[Any]]) -> tuple[RetryingProvider, ScriptedProvid
 
 
 def _request() -> ChatRequest:
-    return ChatRequest(messages=[Message(role=Role.USER, content="hi")], stream=True)
+    return ChatRequest(messages=[Message(role=Role.USER, content="hi")])
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +314,51 @@ def test_loop_retries_transient_failure_then_finishes(ctx: ToolContext) -> None:
     assert text == "recovered"
     assert EventType.ERROR not in [e.type for e in events]
     assert inner.calls == 2
+
+
+def test_absorbed_retries_are_visible_in_the_event_stream(ctx: ToolContext) -> None:
+    """The wrapper's ``on_retry`` hook used to be offered and never consumed.
+
+    Without it a report could not tell a retried call from a clean one, and the
+    "retries" column was really counting continuations.
+    """
+    inner = ScriptedProvider([[ConnectionError("gateway hiccup")], [_final("ok")]])
+    loop = AgentLoop(
+        provider=inner,
+        tools=[],
+        system_prompt="sys",
+        retries=2,
+        context_token_budget=None,
+        sleep=lambda _: None,
+    )
+
+    events = list(loop.run(ctx, user_message="hi"))
+
+    recoveries = [e for e in events if e.type is EventType.RECOVERY]
+    assert len(recoveries) == 1
+    assert recoveries[0].data["reason"] == "provider_retry"
+    assert "ConnectionError" in recoveries[0].data["detail"]
+    # It is announced before the text the retry eventually produced.
+    kinds = [e.type for e in events]
+    assert kinds.index(EventType.RECOVERY) < kinds.index(EventType.TEXT_DELTA)
+
+
+def test_exhausted_retries_are_still_reported_before_the_error(ctx: ToolContext) -> None:
+    inner = ScriptedProvider([[TimeoutError("timeout")]] * 5)
+    loop = AgentLoop(
+        provider=inner,
+        tools=[],
+        system_prompt="sys",
+        retries=1,
+        context_token_budget=None,
+        sleep=lambda _: None,
+    )
+
+    events = list(loop.run(ctx, user_message="hi"))
+
+    kinds = [e.type for e in events]
+    assert kinds.count(EventType.RECOVERY) == 1, "the one absorbed retry"
+    assert kinds.index(EventType.RECOVERY) < kinds.index(EventType.ERROR)
 
 
 def test_loop_surfaces_permanent_error_as_event(ctx: ToolContext) -> None:

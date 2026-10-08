@@ -244,7 +244,6 @@ def provider_summarizer(
             ],
             model=model,
             max_tokens=max_tokens,
-            stream=False,
         )
         response = provider.chat(request)
         return (response.message.content or "").strip()

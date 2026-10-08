@@ -47,7 +47,6 @@ def test_streaming_accumulates_full_text() -> None:
     provider = DeepSeekProvider(api_key=os.environ["LOCA_DEEPSEEK_API_KEY"])
     request = ChatRequest(
         messages=[Message(role=Role.USER, content="一句话自我介绍")],
-        stream=True,
     )
     pieces: list[str] = []
     finish = None

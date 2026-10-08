@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 import web.server as server
+from loca.agents import CODING_AGENT
 from loca.providers.base import LLMProvider
 from loca.providers.types import (
     ChatRequest,
@@ -77,6 +79,17 @@ def _read_then_answer() -> ScriptedProvider:
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(server.app)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_session_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let these tests touch the developer's real session database.
+
+    ``/api/chat`` now opens the same database the CLI uses (that is what lets
+    ``loca rollback`` undo a browser turn), so without this every test would
+    write sessions and file snapshots into ``~/.loca/sessions.db``.
+    """
+    monkeypatch.setenv("LOCA_DB", str(tmp_path / "web-sessions.db"))
 
 
 def _events(body: str) -> list[dict[str, Any]]:
@@ -248,3 +261,404 @@ def test_serialize_event_ignores_step_start() -> None:
     from loca.core.events import AgentEvent, EventType
 
     assert server._serialize_event(AgentEvent(type=EventType.STEP_START, data={"step": 0})) is None
+
+
+# ---------------------------------------------------------------------------
+# Workspace selection
+#
+# The web UI has to be able to point the agent somewhere other than the project
+# root, and a bad path has to fail loudly rather than quietly running the tools
+# in the wrong directory.
+# ---------------------------------------------------------------------------
+
+
+def _run_turn(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]
+) -> list[dict[str, Any]]:
+    monkeypatch.setattr(server, "get_provider", lambda *a, **k: _read_then_answer())
+    with client.stream("POST", "/api/chat", json=payload) as resp:
+        assert resp.status_code == 200
+        body = "".join(resp.iter_text())
+    return _events(body)
+
+
+def test_chat_runs_in_the_workspace_the_request_names(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A per-request workspace must actually reach the tools.
+
+    The scripted provider reads ``pyproject.toml``. The content that comes back
+    has to be the one planted in ``tmp_path`` and not the real file at the
+    project root — otherwise the field is accepted and then ignored.
+    """
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'elsewhere'\n", encoding="utf-8"
+    )
+
+    events = _run_turn(
+        client,
+        monkeypatch,
+        {"message": "what is this project?", "workspace": str(tmp_path)},
+    )
+
+    result = next(e for e in events if e["type"] == "tool_result")
+    assert result["is_error"] is False
+    assert "name = 'elsewhere'" in result["content"]
+    # Compare a key only the real file carries. Asserting on the bare word
+    # "loca" would fire spuriously — the sandbox path contains it too.
+    assert "requires-python" not in result["content"]
+
+
+def test_chat_still_defaults_to_the_project_root(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Omitting the field keeps the previous behaviour."""
+    events = _run_turn(client, monkeypatch, {"message": "what is this project?"})
+
+    result = next(e for e in events if e["type"] == "tool_result")
+    assert 'name = "loca"' in result["content"]
+
+
+def test_blank_workspace_falls_back_to_the_default() -> None:
+    for blank in (None, "", "   "):
+        assert server._workspace_for(blank) == server.DEFAULT_WORKSPACE
+
+
+def test_workspace_rejects_a_path_that_does_not_exist(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="does not exist"):
+        server._workspace_for(str(tmp_path / "nope"))
+
+
+def test_workspace_rejects_a_file(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a directory"):
+        server._workspace_for(str(target))
+
+
+def test_workspace_rejects_a_git_bash_path() -> None:
+    with pytest.raises(ValueError, match="Git-Bash"):
+        server._workspace_for("/d/repo")
+
+
+def test_a_bad_workspace_is_reported_before_the_provider_is_called(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The path is the one thing the caller just typed, so it is checked first."""
+    provider = _read_then_answer()
+    monkeypatch.setattr(server, "get_provider", lambda *a, **k: provider)
+
+    with client.stream(
+        "POST",
+        "/api/chat",
+        json={"message": "hello", "workspace": str(tmp_path / "missing")},
+    ) as resp:
+        assert resp.status_code == 200
+        body = "".join(resp.iter_text())
+
+    events = _events(body)
+    errors = [e for e in events if e["type"] == "error"]
+    assert len(errors) == 1
+    assert "does not exist" in errors[0]["message"]
+    assert "done" not in [e["type"] for e in events]
+    assert provider.calls == 0
+
+
+# ---------------------------------------------------------------------------
+# Checkpoints, sessions and undo
+#
+# The browser is the surface where undo matters most — the file on disk is out
+# of sight while you type — so a turn that edits a file has to leave a snapshot
+# behind, and there has to be a way back to it.
+# ---------------------------------------------------------------------------
+
+
+def _writer(path: str, content: str) -> ScriptedProvider:
+    """A provider that writes ``path`` once, then answers."""
+    return ScriptedProvider(
+        [
+            [
+                StreamChunk(
+                    delta_content="writing. ",
+                    delta_tool_calls=[
+                        ToolCall(
+                            id="c1",
+                            name="write_file",
+                            arguments={"path": path, "content": content},
+                        )
+                    ],
+                    finish_reason=FinishReason.TOOL_USE,
+                )
+            ],
+            [StreamChunk(delta_content="done", finish_reason=FinishReason.STOP)],
+        ]
+    )
+
+
+def _stream_turn(client: TestClient, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """POST one turn and parse the stream. Patch the provider first."""
+    with client.stream("POST", "/api/chat", json=payload) as resp:
+        assert resp.status_code == 200
+        return _events("".join(resp.iter_text()))
+
+
+def _session_of(events: list[dict[str, Any]]) -> str:
+    """The id the server announced as the first event of the turn."""
+    assert events[0]["type"] == "session"
+    return events[0]["id"]
+
+
+def _checkpoint_of(events: list[dict[str, Any]]) -> dict[str, Any]:
+    return next(e for e in events if e["type"] == "checkpoint")
+
+
+def test_the_turn_announces_its_session_first(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server, "get_provider", lambda *a, **k: _read_then_answer())
+
+    events = _stream_turn(client, {"message": "what is this project?"})
+
+    assert events[0]["type"] == "session"
+    assert events[0]["id"]
+
+
+def test_the_announced_session_id_round_trips(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Echoing the id back has to land in the *same* session, not a new one."""
+    monkeypatch.setattr(server, "get_provider", lambda *a, **k: _read_then_answer())
+
+    session_id = _session_of(_stream_turn(client, {"message": "hello"}))
+    again = _session_of(_stream_turn(client, {"message": "again", "session_id": session_id}))
+
+    assert again == session_id
+    store = server.open_store()
+    try:
+        info = store.get_session(session_id)
+        assert info is not None
+        # The transcript is stored too, which is what makes
+        # `loca sessions show <id>` able to explain what the checkpoints belong to.
+        assert store.message_count(session_id) > 0
+    finally:
+        store.close()
+
+
+def test_a_turn_runs_a_fully_assembled_agent(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The regression guard for a bug that shipped here twice.
+
+    The web entry point used to assemble its own loop. It had no
+    ``CheckpointManager`` — so no ``checkpoint`` event ever fired and the undo
+    button was dead code — and later no ``ContextManager``, so a long browser
+    conversation dropped its oldest turns instead of summarizing them. Both are
+    the same omission, so this asserts on the *built* loop rather than on the
+    source: moving the omission somewhere else must not pass.
+    """
+    monkeypatch.setattr(server, "get_provider", lambda *a, **k: _read_then_answer())
+
+    seen: dict[str, Any] = {}
+    real_build = server.build_agent
+
+    def spy(spec: Any, **kwargs: Any) -> Any:
+        runtime = real_build(spec, **kwargs)
+        seen["spec"] = spec
+        seen["loop"] = runtime.loop
+        return runtime
+
+    monkeypatch.setattr(server, "build_agent", spy)
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text('name = "loca"\n', encoding="utf-8")
+
+    _stream_turn(client, {"message": "what is this?", "workspace": str(workspace)})
+
+    loop = seen["loop"]
+    assert seen["spec"] is CODING_AGENT
+    assert loop.system_prompt == CODING_AGENT.system_prompt
+    assert [tool.name for tool in loop.tools] == list(CODING_AGENT.tool_names)
+    assert loop.checkpoint_manager is not None, "no checkpoints — undo has nothing to attach to"
+    assert loop.context_manager is not None, "a long chat would silently drop its history"
+    assert loop.context_token_budget is None, "one policy: the manager owns the budget"
+
+
+def test_a_file_edit_is_checkpointed_and_can_be_undone(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = workspace / "notes.txt"
+    target.write_text("before\n", encoding="utf-8")
+    monkeypatch.setattr(
+        server, "get_provider", lambda *a, **k: _writer("notes.txt", "after\n")
+    )
+
+    events = _stream_turn(client, {"message": "rewrite notes.txt", "workspace": str(workspace)})
+
+    checkpoint = _checkpoint_of(events)
+    assert checkpoint["files"] == ["notes.txt"]
+    assert checkpoint["tool"] == "write_file"
+    assert checkpoint["restorable"] is True
+    assert target.read_text(encoding="utf-8") == "after\n"
+
+    undone = client.post(
+        "/api/rollback",
+        json={"session_id": _session_of(events), "step": checkpoint["step"]},
+    ).json()
+
+    assert undone["ok"] is True
+    assert undone["applied"] == 1
+    assert undone["files"] == [{"path": "notes.txt", "action": "restored"}]
+    assert target.read_text(encoding="utf-8") == "before\n"
+
+
+def test_a_created_file_is_deleted_on_rollback(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Restoring "did not exist" is not the same as restoring "empty"."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.setattr(server, "get_provider", lambda *a, **k: _writer("new.txt", "hi\n"))
+
+    events = _stream_turn(client, {"message": "create new.txt", "workspace": str(workspace)})
+    created = workspace / "new.txt"
+    assert created.exists()
+
+    undone = client.post(
+        "/api/rollback",
+        json={"session_id": _session_of(events), "step": _checkpoint_of(events)["step"]},
+    ).json()
+
+    assert undone["ok"] is True
+    assert undone["files"] == [{"path": "new.txt", "action": "deleted"}]
+    assert not created.exists()
+
+
+def test_each_turn_checkpoints_at_a_new_step(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two turns must not both checkpoint at step 0.
+
+    Rollback undoes a step *and everything after it*, so colliding steps would
+    make "undo just this turn" impossible to express — and the second turn's
+    undo would silently swallow the first turn's edit.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = workspace / "notes.txt"
+
+    monkeypatch.setattr(server, "get_provider", lambda *a, **k: _writer("notes.txt", "v1\n"))
+    first = _stream_turn(client, {"message": "write v1", "workspace": str(workspace)})
+    session_id = _session_of(first)
+
+    monkeypatch.setattr(server, "get_provider", lambda *a, **k: _writer("notes.txt", "v2\n"))
+    second = _stream_turn(
+        client,
+        {"message": "write v2", "session_id": session_id, "workspace": str(workspace)},
+    )
+
+    step_one, step_two = _checkpoint_of(first)["step"], _checkpoint_of(second)["step"]
+    assert step_two > step_one, "the step counter restarted, so both turns share a step"
+    assert target.read_text(encoding="utf-8") == "v2\n"
+
+    undone = client.post(
+        "/api/rollback", json={"session_id": session_id, "step": step_two}
+    ).json()
+
+    assert undone["ok"] is True
+    assert undone["applied"] == 1
+    assert target.read_text(encoding="utf-8") == "v1\n"
+
+
+def test_rollback_restores_each_workspace_from_its_own_snapshot(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The snapshot is taken relative to the workspace the edit happened in.
+
+    Both workspaces hold a file with the same name, and both were edited in one
+    session. Undoing the whole session has to put each file back where it came
+    from — a rollback driven by a single "current workspace" would either write
+    one directory's bytes into the other or skip half the work.
+    """
+    first_ws, second_ws = tmp_path / "first", tmp_path / "second"
+    first_ws.mkdir()
+    second_ws.mkdir()
+    (first_ws / "notes.txt").write_text("first before\n", encoding="utf-8")
+    (second_ws / "notes.txt").write_text("second before\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        server, "get_provider", lambda *a, **k: _writer("notes.txt", "first after\n")
+    )
+    first = _stream_turn(client, {"message": "edit here", "workspace": str(first_ws)})
+    session_id = _session_of(first)
+    step = _checkpoint_of(first)["step"]
+
+    monkeypatch.setattr(
+        server, "get_provider", lambda *a, **k: _writer("notes.txt", "second after\n")
+    )
+    _stream_turn(
+        client,
+        {"message": "now edit over there", "session_id": session_id, "workspace": str(second_ws)},
+    )
+
+    undone = client.post(
+        "/api/rollback", json={"session_id": session_id, "step": step}
+    ).json()
+
+    assert undone["ok"] is True
+    assert undone["applied"] == 2
+    assert (first_ws / "notes.txt").read_text(encoding="utf-8") == "first before\n"
+    assert (second_ws / "notes.txt").read_text(encoding="utf-8") == "second before\n"
+
+
+def test_rollback_reports_an_unknown_session(client: TestClient) -> None:
+    out = client.post(
+        "/api/rollback", json={"session_id": "20260101-000000-abcdef", "step": 0}
+    ).json()
+
+    assert out["ok"] is False
+    assert "unknown session" in out["message"]
+
+
+def test_rollback_without_checkpoints_says_so(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn that only read files leaves nothing to undo."""
+    monkeypatch.setattr(server, "get_provider", lambda *a, **k: _read_then_answer())
+    events = _stream_turn(client, {"message": "what is this project?"})
+    assert "checkpoint" not in [e["type"] for e in events]
+
+    out = client.post(
+        "/api/rollback", json={"session_id": _session_of(events), "step": 0}
+    ).json()
+
+    assert out["ok"] is False
+    assert "nothing to undo" in out["message"]
+
+
+def test_rollback_rejects_a_session_id_we_never_issued(client: TestClient) -> None:
+    out = client.post(
+        "/api/rollback", json={"session_id": "not a session id!", "step": 0}
+    ).json()
+
+    assert out["ok"] is False
+    assert "not a loca session id" in out["message"]
+
+
+def test_a_bad_session_id_is_refused_before_the_provider_is_called(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _read_then_answer()
+    monkeypatch.setattr(server, "get_provider", lambda *a, **k: provider)
+
+    events = _stream_turn(client, {"message": "hello", "session_id": "/d/repo"})
+
+    errors = [e for e in events if e["type"] == "error"]
+    assert len(errors) == 1
+    assert "not a loca session id" in errors[0]["message"]
+    # No session event either: nothing was created, so nothing was announced.
+    assert "session" not in [e["type"] for e in events]
+    assert provider.calls == 0

@@ -545,6 +545,12 @@ def test_verify_task_set_flags_an_unsolvable_task(tmp_path: Path) -> None:
 
 
 def test_verify_task_set_reports_a_task_without_a_solution(tmp_path: Path) -> None:
+    """A missing reference answer is a defect, not a "nothing to check here".
+
+    ``ok`` used to be ``passes_with_solution is not False``, so a task with no
+    ``solution/`` directory scored as healthy: the task set reported "all 36
+    check out" while some of them had never been demonstrated solvable.
+    """
     _write_task(
         tmp_path,
         seed={"solution.py": ADD_BROKEN},
@@ -553,8 +559,10 @@ def test_verify_task_set_reports_a_task_without_a_solution(tmp_path: Path) -> No
     report = verify_task_set(load_tasks(tmp_path), workdir=tmp_path / "work")
     assert report[0].passes_with_solution is None
     assert not report[0].has_solution
-    # Still fine as far as "rejects the seed" goes, but not proven solvable.
-    assert report[0].ok
+    # It does reject the seed — but "unsolvable" and "unverified" are different
+    # from "fine".
+    assert report[0].fails_on_seed
+    assert not report[0].ok
 
 
 def test_verify_task_set_survives_a_crashing_grader(tmp_path: Path) -> None:

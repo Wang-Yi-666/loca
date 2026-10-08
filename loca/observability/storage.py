@@ -197,13 +197,20 @@ class SessionInfo:
 
 @dataclass(slots=True)
 class CheckpointRow:
-    """One stored checkpoint. ``payload`` is owned by the checkpoint module."""
+    """One stored checkpoint. ``payload`` is owned by the checkpoint module.
+
+    ``id`` is the autoincrement primary key — the insertion order. Rollback
+    needs it: several checkpoints can share a step (one model reply that edits
+    the same file twice, or a crash that reuses a step), and only ``id`` says
+    which of them came first.
+    """
 
     session_id: str
     step: int
     tool: str | None
     created_at: str
     payload: dict[str, Any]
+    id: int = 0
 
 
 @dataclass(slots=True)
@@ -474,7 +481,7 @@ class SessionStore:
         return int(cur.lastrowid or 0)
 
     def list_checkpoints(self, session_id: str) -> list[CheckpointRow]:
-        """All checkpoints for a session, oldest step first."""
+        """All checkpoints for a session, oldest step first (insertion order within a step)."""
         rows = self._conn.execute(
             "SELECT * FROM checkpoints WHERE session_id = ? ORDER BY step, id",
             (session_id,),
@@ -486,14 +493,10 @@ class SessionStore:
                 tool=r["tool"],
                 created_at=r["created_at"],
                 payload=json.loads(r["payload"]),
+                id=r["id"],
             )
             for r in rows
         ]
-
-    def delete_checkpoints(self, session_id: str) -> int:
-        cur = self._conn.execute("DELETE FROM checkpoints WHERE session_id = ?", (session_id,))
-        self._conn.commit()
-        return cur.rowcount
 
     # ---- traces -----------------------------------------------------------
 

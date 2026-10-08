@@ -53,14 +53,17 @@ verbatim provider field.
 from __future__ import annotations
 
 import json
+import logging
 import os
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from loca.core.events import AgentEvent, EventType
 from loca.observability.storage import SessionStore, default_db_path, utcnow
+
+_log = logging.getLogger("loca.trace")
 
 #: How much of the prompt's last message is kept. Enough to recognise the step
 #: when reading a report; not enough to be a second copy of the transcript.
@@ -209,7 +212,13 @@ class StepTrace:
     total_tokens: int = 0
     finish_reason: str = ""
     error: str | None = None
+    #: Transient provider failures the retry wrapper absorbed during this step.
     retries: int = 0
+    #: Times the model was asked to continue because the reply hit the output
+    #: cap. Kept apart from :attr:`retries`: one field used to hold both, which
+    #: meant a report's "retries" column counted continuations and never
+    #: reported a provider failure at all.
+    continuations: int = 0
 
     #: Human-readable notes about context pressure during this step.
     context: list[str] = field(default_factory=list)
@@ -257,6 +266,7 @@ class StepTrace:
             "finish_reason": self.finish_reason,
             "error": self.error,
             "retries": self.retries,
+            "continuations": self.continuations,
             "context": list(self.context),
             "checkpoints": list(self.checkpoints),
         }
@@ -284,6 +294,7 @@ class StepTrace:
             finish_reason=data.get("finish_reason") or "",
             error=data.get("error"),
             retries=int(data.get("retries") or 0),
+            continuations=int(data.get("continuations") or 0),
             context=list(data.get("context") or []),
             checkpoints=list(data.get("checkpoints") or []),
         )
@@ -392,6 +403,9 @@ class TraceRecorder:
 
         if kind is EventType.TEXT_DELTA:
             self._pending.text += data.get("content", "")
+            # The model's private thinking rides the same event with an empty
+            # ``content``; it is kept apart so the trace can show both.
+            self._pending.reasoning += data.get("reasoning", "")
         elif kind is EventType.TOOL_CALL:
             self._note_call(data)
         elif kind is EventType.TOOL_RESULT:
@@ -416,8 +430,18 @@ class TraceRecorder:
                 f"~{data.get('estimated_tokens', 0)}/{data.get('budget', 0)} tokens"
             )
         elif kind is EventType.RECOVERY:
-            self._pending.retries += 1
-            self._pending.context.append(f"recovered from {data.get('reason', 'unknown')}")
+            reason = str(data.get("reason", "unknown"))
+            if reason == "length":
+                # The loop asked the model to carry on after the output cap.
+                # Nothing failed here, so it is not a retry.
+                self._pending.continuations += 1
+                self._pending.context.append("continued after hitting the output cap")
+            else:
+                self._pending.retries += 1
+                detail = data.get("detail")
+                self._pending.context.append(
+                    f"recovered from {reason}" + (f" ({detail})" if detail else "")
+                )
         elif kind is EventType.ERROR:
             self._pending.error = str(data.get("message") or "unknown error")
             # The loop treats a provider error as terminal (it yields ERROR and
@@ -522,6 +546,13 @@ class TraceRecorder:
         return trace
 
     def _persist(self, trace: StepTrace) -> None:
+        """Write one finished step to both sinks, never raising.
+
+        A failed sink must not abort the agent run — but it must not vanish
+        either: a user who thinks they have a trace and does not is worse off
+        than one who sees a warning. So the exceptions are caught and logged,
+        and the warning names which sink broke.
+        """
         payload = trace.to_dict()
         if self.store is not None:
             try:
@@ -531,16 +562,30 @@ class TraceRecorder:
                     payload=payload,
                     created_at=trace.created_at,
                 )
-            except Exception:  # pragma: no cover - a broken db must not kill a run
-                pass
+            except Exception as exc:  # pragma: no cover - a broken db must not kill a run
+                _log.warning(
+                    "trace: could not write step %s of session %s to the database "
+                    "(%s: %s) — the SQLite trace for this step is lost",
+                    trace.step,
+                    trace.session_id,
+                    type(exc).__name__,
+                    exc,
+                )
         if self.jsonl_path is not None:
             try:
                 self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
                 with self.jsonl_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(payload, ensure_ascii=False))
                     handle.write("\n")
-            except OSError:  # pragma: no cover - disk full / permissions
-                pass
+            except OSError as exc:  # pragma: no cover - disk full / permissions
+                _log.warning(
+                    "trace: could not append step %s of session %s to %s (%s) — "
+                    "the JSONL mirror for this step is lost",
+                    trace.step,
+                    trace.session_id,
+                    self.jsonl_path,
+                    exc,
+                )
 
 
 def _render_tail(messages: Sequence[Any]) -> str:
@@ -562,12 +607,15 @@ def _derive_finish(trace: StepTrace) -> str:
     The loop only announces a session-level reason in ``DONE`` (which
     :meth:`TraceRecorder.observe` stores verbatim, so this is only reached for
     steps that ended *before* the run did). Order matters: a failure beats a
-    recovery, a recovery beats "the model used tools".
+    recovery, a recovery beats a continuation, and a continuation beats "the
+    model used tools".
     """
     if trace.error:
         return "error"
     if trace.retries:
         return "recovered"
+    if trace.continuations:
+        return "continued"
     if trace.tool_calls:
         return "tool_use"
     return "stop"
@@ -602,11 +650,6 @@ def read_jsonl(path: str | Path) -> list[StepTrace]:
     return steps
 
 
-def iter_steps(steps: Sequence[StepTrace]) -> Iterator[StepTrace]:
-    """Yield the steps in order — sugar for callers that stream into a renderer."""
-    yield from steps
-
-
 __all__ = [
     "PROMPT_TAIL_CHARS",
     "TOOL_RESULT_PREVIEW_CHARS",
@@ -617,7 +660,6 @@ __all__ = [
     "ToolResultRecord",
     "TraceRecorder",
     "default_trace_dir",
-    "iter_steps",
     "load_steps",
     "read_jsonl",
     "trace_jsonl_path",

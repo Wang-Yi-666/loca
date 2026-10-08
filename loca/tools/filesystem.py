@@ -1,8 +1,13 @@
 """Filesystem tools: read_file, write_file, edit_file.
 
-All three tools share one path-sandbox policy: arguments are rejected if the
-resolved path is outside the workspace. This stops the model from reading
-``C:\\Users\\nono\\.ssh\\id_rsa`` even if it tries.
+All three tools share one path-sandbox policy: an argument is rejected when the
+resolved path lands outside the workspace, so a model cannot reach
+``~/.ssh/id_rsa`` through *these* tools even if it tries.
+
+Scoped honestly — this is a sandbox on the file tools, not on the project.
+:mod:`loca.tools.shell` runs lines through ``cmd.exe`` on purpose and can reach
+anything the user can; the two policies are documented separately so that
+neither gets mistaken for a whole-program guarantee.
 """
 
 from __future__ import annotations
@@ -13,6 +18,21 @@ from typing import Any
 
 from loca.tools.base import Tool, ToolContext, ToolResult
 from loca.tools.validation import validate_arguments
+
+
+def _detect_newline(raw: bytes) -> str:
+    """The line ending this file already uses, for ``open(newline=...)``.
+
+    Returns ``"\\r\\n"`` when CRLF pairs dominate, otherwise ``""`` (write
+    ``\\n`` verbatim). Reading normalises every convention to ``\\n``, so
+    writing with the default translates *all* of them to ``\\r\\n`` and turns a
+    one-line edit into a whole-file diff. A mixed file is normalised to its
+    majority ending, which is the most that can be preserved without rewriting
+    the file byte-by-byte.
+    """
+    crlf = raw.count(b"\r\n")
+    lone_lf = raw.count(b"\n") - crlf
+    return "\r\n" if crlf > lone_lf else ""
 
 
 def _resolve_within_workspace(path_str: str, workspace: Path) -> Path:
@@ -46,8 +66,10 @@ class ReadFileTool(Tool):
     description = (
         "Read the contents of a UTF-8 text file. By default returns the whole "
         "file. Use start_line and end_line (0-indexed, end exclusive) to read "
-        "a slice. Lines longer than 4000 chars are truncated with a marker. "
-        "Path must be inside the workspace."
+        "a slice. Lines longer than 4000 chars are truncated with a marker, "
+        "and at most 2000 lines / 100000 bytes are returned per call — the "
+        "header says how many lines the file really has, so you can page "
+        "through a large file. Path must be inside the workspace."
     )
     input_schema: dict[str, Any] = {
         "type": "object",
@@ -71,6 +93,12 @@ class ReadFileTool(Tool):
         "additionalProperties": False,
     }
     _MAX_LINE_LEN = 4000
+    #: Caps on a single response. ``read_file`` had none of these before the
+    #: Week-6 audit: a 5,000-line log came back as 290,202 characters and
+    #: pushed the rest of the conversation out of the budget. ``shell`` has
+    #: carried a three-way cap since Week 2 — this is the same contract.
+    _MAX_LINES = 2000
+    _MAX_BYTES = 100_000
 
     def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         validate_arguments(self.input_schema, arguments)
@@ -108,6 +136,10 @@ class ReadFileTool(Tool):
         else:
             sliced = lines[start:end]
 
+        truncated_lines = len(sliced) > self._MAX_LINES
+        if truncated_lines:
+            sliced = sliced[: self._MAX_LINES]
+
         rendered: list[str] = []
         for offset, line in enumerate(sliced):
             line_no = start + offset
@@ -116,7 +148,27 @@ class ReadFileTool(Tool):
             rendered.append(f"{line_no:6d}\t{line}")
 
         header = f"<file path={path} total_lines={total} showing={len(rendered)}>"
-        return ToolResult(content=header + "\n" + "\n".join(rendered))
+        body = "\n".join(rendered)
+
+        notes: list[str] = []
+        if truncated_lines:
+            # Telling the model where to resume is the difference between a
+            # usable cap and a dead end.
+            notes.append(
+                f"… <{total - (start + len(rendered))} more line(s); "
+                f"re-read with start_line={start + len(rendered)}>"
+            )
+        # Backstop for "many lines, each just under the per-line cap", which the
+        # line count alone does not bound.
+        if len(body.encode("utf-8")) > self._MAX_BYTES:
+            body = body.encode("utf-8")[: self._MAX_BYTES].decode("utf-8", errors="ignore")
+            notes.append(f"… <output truncated at {self._MAX_BYTES} bytes>")
+
+        parts = [header]
+        if body:
+            parts.append(body)
+        parts.extend(notes)
+        return ToolResult(content="\n".join(parts))
 
 
 class WriteFileTool(Tool):
@@ -245,11 +297,20 @@ class EditFileTool(Tool):
             return ToolResult(content=f"Not a file: {path}", is_error=True)
 
         try:
-            original = path.read_text(encoding="utf-8")
+            raw = path.read_bytes()
+        except OSError as exc:
+            return ToolResult(content=f"Could not read {path}: {exc}", is_error=True)
+        try:
+            decoded = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             return ToolResult(
                 content=f"File is not valid UTF-8: {exc.reason}", is_error=True
             )
+        newline = _detect_newline(raw)
+        # Match against the text the model actually saw. ``read_file`` reads
+        # with universal newlines, so a CRLF file reaches the model as LF and
+        # the ``find`` string copied back out of it is LF as well.
+        original = decoded.replace("\r\n", "\n").replace("\r", "\n")
 
         count = original.count(find)
         if count == 0:
@@ -275,7 +336,11 @@ class EditFileTool(Tool):
             if global_replace
             else original.replace(find, replace, 1)
         )
-        path.write_text(updated, encoding="utf-8")
+        # Write back in the file's own convention. Writing with the default
+        # translates every "\n" to "\r\n" — a one-line edit becomes a whole-file
+        # diff and the reported diff stops matching what landed on disk.
+        with path.open("w", encoding="utf-8", newline=newline) as handle:
+            handle.write(updated)
 
         diff = self._make_diff(original, updated, path, path)
         return ToolResult(

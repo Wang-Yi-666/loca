@@ -145,6 +145,7 @@ class _ChatProvider(LLMProvider):
     def __init__(self, reply: str = "a compact summary") -> None:
         self.reply = reply
         self.requests: list[ChatRequest] = []
+        self.streamed: list[ChatRequest] = []
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
@@ -154,7 +155,8 @@ class _ChatProvider(LLMProvider):
             usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
         )
 
-    def stream_chat(self, request: ChatRequest) -> Iterator[StreamChunk]:  # pragma: no cover
+    def stream_chat(self, request: ChatRequest) -> Iterator[StreamChunk]:
+        self.streamed.append(request)
         raise NotImplementedError
 
 
@@ -166,7 +168,7 @@ def test_provider_summarizer_uses_a_plain_chat_call() -> None:
 
     assert summary == "the goal was to fix the parser"
     request = provider.requests[0]
-    assert request.stream is False
+    assert provider.streamed == [], "a summary must never stream into the user's transcript"
     assert request.max_tokens == 256
     assert request.model == "deepseek-chat"
     assert "fix the parser" in request.messages[1].content

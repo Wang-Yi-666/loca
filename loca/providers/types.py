@@ -100,14 +100,19 @@ class Message:
 
 @dataclass(slots=True)
 class ChatRequest:
-    """Input to a provider call."""
+    """Input to a provider call.
+
+    There is deliberately no ``stream`` flag: whether a call streams is decided
+    by the method the caller picks on the provider (``chat`` vs ``stream_chat``),
+    never by the request. A flag here would be a second source of truth that the
+    providers do not read.
+    """
 
     messages: list[Message]
     tools: list[dict[str, Any]] = field(default_factory=list)
     model: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
-    stream: bool = False
 
 
 @dataclass(slots=True)

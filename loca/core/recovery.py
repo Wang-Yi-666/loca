@@ -165,6 +165,15 @@ class RetryingProvider(LLMProvider):
         return getattr(self._inner, "name", "unknown")
 
     @property
+    def resolved_model(self) -> str | None:
+        """Forward the wrapped provider's default model.
+
+        A wrapper that hid it would make a benchmark report record ``null`` for
+        a run whose provider does know exactly which model it used.
+        """
+        return getattr(self._inner, "resolved_model", None)
+
+    @property
     def inner(self) -> LLMProvider:
         """The wrapped provider (handy for tests and for unwrapping)."""
         return self._inner

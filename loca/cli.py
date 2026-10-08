@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -41,6 +40,7 @@ from loca.core.events import EventType
 from loca.core.loop import DEFAULT_TOKEN_BUDGET, AgentLoop
 from loca.providers.base import LLMProvider
 from loca.tools.base import ToolContext
+from loca.workspace import resolve_workspace
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 _PROJECT_ROOT = _PACKAGE_ROOT.parent
@@ -59,32 +59,6 @@ def load_env() -> None:
         return
     load_dotenv(_PROJECT_ROOT / ".env")
     load_dotenv(Path.cwd() / ".env")
-
-
-#: ``/d/repo`` or ``/c`` — a Git-Bash/MSYS-style path, never valid on Windows.
-_MSYS_PATH = re.compile(r"^/([A-Za-z])(?:/|$)")
-
-
-def resolve_workspace(raw: str) -> Path:
-    """Turn a ``--workspace`` value into an absolute Windows path.
-
-    loca is Windows-only, so ``--workspace`` must be a Windows path
-    (``D:\\Projects\\repo``). A Git-Bash path like ``/d/repo`` is worse than
-    obviously wrong: ``ntpath`` reads it as *drive-relative*, so it silently
-    resolves to ``D:\\d\\repo`` — an empty directory. The model would then work
-    in a phantom workspace while the operator stares at an untouched repo. We
-    reject the shape instead of guessing.
-    """
-    match = _MSYS_PATH.match(raw)
-    if match:
-        drive = match.group(1).upper()
-        tail = raw[3:].replace("/", "\\")
-        suggestion = f"{drive}:\\{tail}" if tail else f"{drive}:\\"
-        raise ValueError(
-            f"--workspace {raw!r} looks like a Git-Bash path. loca is "
-            f"Windows-only — pass a Windows path instead, e.g. {suggestion}"
-        )
-    return Path(raw).expanduser().resolve()
 
 
 def _console() -> Any:
@@ -157,18 +131,27 @@ def run_turn(
 
         elif kind is EventType.CHECKPOINT and verbose_tools:
             files = ", ".join(event.data["files"]) or "(nothing)"
+            # Naming the undo command right here is the point: a checkpoint
+            # nobody notices is indistinguishable from no checkpoint at all.
+            step = event.data["step"]
             console.print(
-                f"[dim]⛁ checkpoint @ step {event.data['step']} · {files}[/dim]"
+                f"[dim]⛁ checkpoint @ step {step} · {files} · /rollback {step} to undo[/dim]"
             )
 
         elif kind is EventType.USAGE:
             usage = event.data
 
         elif kind is EventType.RECOVERY:
-            console.print(
-                f"\n[yellow]recovering from {event.data['reason']} — "
-                "asking the model to continue[/yellow]"
-            )
+            if event.data.get("reason") == "length":
+                console.print(
+                    "\n[yellow]output cap reached — asking the model to "
+                    "continue[/yellow]"
+                )
+            else:
+                console.print(
+                    f"\n[yellow]transient provider failure "
+                    f"({event.data.get('reason', 'unknown')}) — retrying[/yellow]"
+                )
 
         elif kind is EventType.ERROR:
             suffix = " (transient, retries exhausted)" if event.data.get("retryable") else ""
@@ -207,10 +190,9 @@ def _first_lines(text: str, n: int) -> str:
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
-    from loca.core.context import ContextManager, provider_summarizer
-    from loca.observability import CheckpointManager, SessionStore, TraceRecorder, new_session_id
+    from loca.agents import CODING_AGENT, build_agent
+    from loca.observability import SessionStore, new_session_id
     from loca.providers.registry import get_provider
-    from loca.tools import register_default_tools
 
     console = _console()
     load_env()
@@ -223,13 +205,6 @@ def cmd_chat(args: argparse.Namespace) -> int:
             "[dim]Put your key in .env as LOCA_DEEPSEEK_API_KEY and retry.[/dim]"
         )
         return 1
-
-    tools = []
-    if not args.no_tools:
-        register_default_tools()
-        from loca.tools.registry import all_tools
-
-        tools = list(all_tools())
 
     try:
         workspace = resolve_workspace(args.workspace)
@@ -256,52 +231,34 @@ def cmd_chat(args: argparse.Namespace) -> int:
         if resumed:
             history = store.load_messages(session_id)
 
-    loop = AgentLoop(
+    # One call assembles the whole agent — prompt, tools, context policy,
+    # checkpoints and the trace sink. See loca/agents.py: assembling it here is
+    # what let the web entry point drift without checkpoints, then without
+    # context management.
+    runtime = build_agent(
+        CODING_AGENT,
         provider=provider,
-        tools=tools,
-        max_steps=args.max_steps,
-        # The context manager (below) takes over budgeting when present; keep
-        # the loop's own trim path off so there is a single policy in charge.
-        context_token_budget=None,
-        system_prompt=args.system,
-        checkpoint_manager=CheckpointManager(store) if store and tools else None,
-    )
-
-    if args.token_budget > 0:
-        loop.context_manager = ContextManager(
-            budget=args.token_budget,
-            keep_recent=args.keep_recent,
-            model=args.model,
-            # Summarize with the loop's provider, so a compaction call gets the
-            # same retry policy as everything else.
-            summarizer=provider_summarizer(loop.provider, model=args.model)
-            if args.summarize
-            else None,
-        )
-
-    ctx = ToolContext(
         workspace=workspace,
         session_id=session_id or "cli",
-        # Resume the session-wide step counter, so checkpoint steps (and thus
-        # `loca rollback <session> <step>`) stay unambiguous across restarts.
-        step_index=store.next_step(session_id) if store and session_id else 0,
+        store=store,
+        # An empty list, not `None`: `--no-tools` must mean no tools, not "fall
+        # back to whatever the spec names".
+        tools=[] if args.no_tools else None,
+        system_prompt=args.system,
+        max_steps=args.max_steps,
+        token_budget=args.token_budget,
+        keep_recent=args.keep_recent,
+        summarize=args.summarize,
+        model=args.model,
+        # Tracing needs somewhere to live: a recorder without a store would
+        # only ever write the JSONL mirror, which `loca report` never reads.
+        trace=bool(args.trace and store is not None),
     )
-
-    # Trace every model step. The recorder samples the loop's live transcript on
-    # the first event of each step, which is the prompt that actually went out.
-    recorder: TraceRecorder | None = None
-    if store is not None and session_id is not None and args.trace:
-        recorder = TraceRecorder(
-            session_id,
-            store=store,
-            provider=provider.name,
-            model=args.model,
-            prompt_source=lambda: loop.last_transcript,
-        )
+    loop, ctx, recorder = runtime.loop, runtime.ctx, runtime.recorder
 
     console.print(
         f"[bold cyan]loca[/bold cyan] · provider [cyan]{provider.name}[/cyan] · "
-        f"{len(tools)} tool(s) · workspace [dim]{workspace}[/dim]"
+        f"{len(loop.tools)} tool(s) · workspace [dim]{workspace}[/dim]"
     )
     if store is not None:
         counted = len(history)
@@ -330,7 +287,15 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 return 0
             if text.startswith("/"):
                 _handle_repl_command(
-                    text, console, loop=loop, store=store, session_id=session_id
+                    text,
+                    console,
+                    loop=loop,
+                    store=store,
+                    session_id=session_id,
+                    # /rollback needs it: snapshots are stored relative to the
+                    # workspace they were taken in, so restoring has to resolve
+                    # them against the same root.
+                    workspace=workspace,
                 )
                 continue
 
@@ -376,6 +341,7 @@ def _handle_repl_command(
     loop: AgentLoop | None = None,
     store: Any = None,
     session_id: str | None = None,
+    workspace: Any = None,
 ) -> bool:
     """Handle a ``/command`` inside the REPL. Returns ``True`` if recognised."""
     command, _, rest = text.partition(" ")
@@ -384,6 +350,7 @@ def _handle_repl_command(
     if command in {"/help", "/?"}:
         console.print(
             "[dim]/compact[/dim]   summarize earlier turns now\n"
+            "[dim]/rollback[/dim]  undo the last file edit (also: /rollback <step>)\n"
             "[dim]/session[/dim]   show the session id, db and message count\n"
             "[dim]/trace[/dim]     show how many steps have been traced so far\n"
             "[dim]/help[/dim]      this message\n"
@@ -426,6 +393,44 @@ def _handle_repl_command(
                 store.save_transcript(session_id, loop.last_transcript)
         else:
             console.print("[dim]nothing to compact (history is already short)[/dim]")
+        return True
+
+    if command == "/rollback":
+        from rich.markup import escape as markup_escape
+
+        from loca.observability import CheckpointManager
+
+        if store is None or session_id is None:
+            console.print("[dim]no session (started with --no-save) — nothing to undo[/dim]")
+            return True
+
+        rows = store.list_checkpoints(session_id)
+        if not rows:
+            console.print("[dim]no checkpoints yet — no file edit has been snapshotted[/dim]")
+            return True
+
+        wanted = rest.strip()
+        if wanted:
+            try:
+                step = int(wanted)
+            except ValueError:
+                console.print(f"[red]not a step number:[/red] {markup_escape(wanted)}")
+                return True
+        else:
+            # Bare /rollback means "undo what you just did", which for a human
+            # is the most recent file edit. Anything earlier is an explicit
+            # step, and the latest checkpoint is the one to undo to reach it.
+            step = rows[-1].step
+
+        report = CheckpointManager(store).rollback(session_id, step, workspace=workspace)
+        if report.applied_checkpoints == 0:
+            console.print(
+                f"[dim]nothing to undo at step {step} or later — "
+                f"/rollback takes a step from `loca sessions show {session_id}`[/dim]"
+            )
+            return True
+        for line in _rollback_report_lines(report):
+            console.print(f"[dim]{markup_escape(line)}[/dim]")
         return True
 
     console.print(f"[dim]unknown command {command!r} — try /help[/dim]")
@@ -502,19 +507,79 @@ def _show_session(store: Any, session_id: str) -> int:
     return 0
 
 
+def _remove_trace_mirror(session_id: str, store: Any) -> bool:
+    """Delete the session's JSONL trace mirror, if there is one.
+
+    The recorder keeps a second copy of every step under ``<db dir>/traces/``.
+    Leaving it behind meant ``loca report`` could still read a session the CLI
+    had just claimed to delete — the message and the disk disagreed.
+    """
+    from loca.observability.trace import trace_jsonl_path
+
+    path = trace_jsonl_path(session_id, db_path=store.path)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:  # pragma: no cover - permission or lock
+        print(f"could not remove {path}: {exc}")
+        return False
+    return True
+
+
 def _delete_session(store: Any, session_id: str) -> int:
     info = store.get_session(session_id)
     if info is None:
         print(f"no such session: {session_id}")
         return 1
+    # Count before deleting. ``delete_session`` cascades to messages,
+    # checkpoints and traces, so every count read afterwards was 0.
     traces = store.count_traces(session_id)
+    checkpoints = len(store.list_checkpoints(session_id))
     store.delete_session(session_id)
+    mirror_removed = _remove_trace_mirror(session_id, store)
     print(
         f"deleted {session_id} ({info.message_count} message(s), "
-        f"{len(store.list_checkpoints(session_id))} checkpoint(s) removed, "
-        f"{traces} trace(s) removed)"
+        f"{checkpoints} checkpoint(s) removed, {traces} trace(s) removed"
+        + (", jsonl mirror removed" if mirror_removed else "")
+        + ")"
     )
     return 0
+
+
+def _rollback_report_lines(report: Any) -> list[str]:
+    """Render a rollback that applied something, as plain printable lines.
+
+    Shared by ``loca rollback`` and the REPL's ``/rollback`` so the two cannot
+    drift apart. The "nothing to undo" case stays with the callers: a command
+    names the step it was handed (``loca rollback demo 4``), the REPL does not
+    (``/rollback`` defaults to the last checkpoint).
+    """
+    reasons = dict(report.skips)
+    lines: list[str] = []
+    touched = 0
+    for path, action in report.settled().items():
+        if action == "restored":
+            lines.append(f"restored {path}")
+            touched += 1
+        elif action == "deleted":
+            lines.append(f"deleted  {path} (did not exist before that step)")
+            touched += 1
+        else:
+            reason = reasons.get(path)
+            lines.append(f"skipped  {path}" + (f" ({reason})" if reason else ""))
+
+    lines.append(
+        f"\n{report.applied_checkpoints} checkpoint(s) applied · "
+        f"{touched} file(s) affected"
+    )
+    if touched == 0:
+        lines.append("(the workspace already matched the snapshots)")
+    lines.append(
+        "note: only file-tool edits are checkpointed — changes made by the "
+        "shell tool cannot be rolled back"
+    )
+    return lines
 
 
 def cmd_rollback(args: argparse.Namespace) -> int:
@@ -542,31 +607,8 @@ def cmd_rollback(args: argparse.Namespace) -> int:
             )
             return 0
 
-        settled = report.settled()
-        touched = 0
-        for path, action in settled.items():
-            if action == "restored":
-                print(f"restored {path}")
-                touched += 1
-            elif action == "deleted":
-                print(f"deleted  {path} (did not exist before that step)")
-                touched += 1
-            else:
-                print(f"skipped  {path}")
-        for path in report.skipped:
-            if path.split(" (", 1)[0] not in settled:
-                print(f"skipped  {path}")
-
-        print(
-            f"\n{report.applied_checkpoints} checkpoint(s) applied · "
-            f"{touched} file(s) affected"
-        )
-        if touched == 0:
-            print("(the workspace already matched the snapshots)")
-        print(
-            "note: only file-tool edits are checkpointed — changes made by the "
-            "shell tool cannot be rolled back"
-        )
+        for line in _rollback_report_lines(report):
+            print(line)
         return 0
 
 
@@ -769,7 +811,11 @@ def cmd_bench(args: argparse.Namespace) -> int:
                 markup_escape(entry.task_id),
                 markup_escape(entry.difficulty),
                 _tick(entry.fails_on_seed),
-                "—" if entry.passes_with_solution is None else _tick(entry.passes_with_solution),
+                (
+                    "[red]missing[/red]"
+                    if entry.passes_with_solution is None
+                    else _tick(entry.passes_with_solution)
+                ),
             )
         console.print(table)
         broken = [e for e in report if not e.ok]
@@ -780,7 +826,12 @@ def cmd_bench(args: argparse.Namespace) -> int:
                 if not entry.fails_on_seed:
                     detail = markup_escape(entry.seed_detail[:200])
                     console.print(f"    [dim]seed detail: {detail}[/dim]")
-                if entry.passes_with_solution is False:
+                if not entry.has_solution:
+                    console.print(
+                        "    [dim]no reference answer — nothing proves this task "
+                        "can be solved[/dim]"
+                    )
+                elif entry.passes_with_solution is False:
                     detail = markup_escape(entry.solution_detail[:200])
                     console.print(f"    [dim]solution detail: {detail}[/dim]")
             return 1

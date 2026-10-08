@@ -124,6 +124,37 @@ def test_oversized_files_are_recorded_but_not_stored(tmp_path: Path, workspace: 
     assert snapshot.restorable is False
 
 
+def test_capture_survives_a_file_that_vanishes_between_stat_and_read(
+    manager: CheckpointManager, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkpoint observes. It must never be what aborts the turn."""
+    (workspace / "a.txt").write_text("data", encoding="utf-8")
+
+    def boom(self: Path) -> bytes:
+        raise OSError("vanished between stat and read")
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    checkpoint = _capture(manager, workspace, path="a.txt")
+
+    assert checkpoint is not None
+    assert checkpoint.snapshots[0].encoding == UNAVAILABLE
+    assert checkpoint.snapshots[0].restorable is False
+
+
+def test_capture_survives_a_store_that_refuses_to_write(
+    manager: CheckpointManager, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A locked or full database degrades to "no snapshot", not to a crash."""
+    (workspace / "a.txt").write_text("data", encoding="utf-8")
+
+    def boom(*args: Any, **kwargs: Any) -> int:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(manager.store, "save_checkpoint", boom)
+
+    assert _capture(manager, workspace, path="a.txt") is None
+
+
 def test_capture_returns_none_for_untracked_tools(
     manager: CheckpointManager, workspace: Path
 ) -> None:
@@ -249,6 +280,59 @@ def test_rollback_reports_the_final_state_of_each_file(
     # ...but the file did not exist before step 0, so that is the final answer.
     assert report.settled() == {"created.txt": "deleted"}
     assert not (workspace / "created.txt").exists()
+
+
+def test_rollback_undoes_several_writes_within_one_step(
+    manager: CheckpointManager, workspace: Path
+) -> None:
+    """One step, three writes to the same path: the file must end up absent.
+
+    The loop captures every tool call with the same ``global_step``, so this is
+    the ordinary shape for a model that writes a file twice in one reply — and
+    a crash mid-turn makes a restart reuse the step too. Ordering by ``step``
+    alone left these in insertion order, so the *oldest* pre-state was applied
+    first and the newest won: the file came back as the intermediate ``v2``.
+    """
+    target = workspace / "f.txt"
+    for content in ("v1", "v2", "v3"):
+        _capture(manager, workspace, step=1, path="f.txt", content=content)
+        target.write_text(content, encoding="utf-8")
+
+    report = manager.rollback("s1", 1)
+
+    assert report.settled() == {"f.txt": "deleted"}
+    assert report.deleted == ["f.txt"]
+    assert not target.exists()
+
+
+def test_settled_keeps_filenames_that_contain_parentheses(
+    manager: CheckpointManager, workspace: Path
+) -> None:
+    """A path is a path; only the human-readable message may contain ``" ("``."""
+    name = "notes (final).md"
+    target = workspace / name
+    target.write_text("before", encoding="utf-8")
+    _capture(manager, workspace, step=0, path=name)
+    target.write_text("after", encoding="utf-8")
+
+    report = manager.rollback("s1", 0)
+
+    assert report.settled() == {name: "restored"}
+    assert target.read_text(encoding="utf-8") == "before"
+
+
+def test_skips_keep_the_path_and_the_reason_apart(tmp_path: Path, workspace: Path) -> None:
+    name = "notes (draft).md"
+    with SessionStore(tmp_path / "s.db") as store:
+        store.create_session(session_id="s1", workspace=workspace)
+        manager = CheckpointManager(store, max_snapshot_bytes=4)
+        (workspace / name).write_text("0123456789", encoding="utf-8")
+        _capture(manager, workspace, path=name)
+
+        report = manager.rollback("s1", 0)
+
+    assert report.skips == [(name, "not captured")]
+    assert report.skipped == [f"{name} (not captured)"]
 
 
 def test_rollback_with_no_checkpoints_is_a_no_op(

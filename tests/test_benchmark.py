@@ -9,6 +9,7 @@ loop, the real tools and the real graders.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from io import StringIO
 from pathlib import Path
@@ -560,6 +561,119 @@ def test_render_warns_about_a_broken_grader() -> None:
     buffer = StringIO()
     render(report, Console(file=buffer, width=200))
     assert "broken grader" in buffer.getvalue()
+
+
+# ---- the report names what it measured ---------------------------------------
+
+
+class _NamedProvider(ScriptedProvider):
+    """A scripted provider that also knows which model it speaks for."""
+
+    def __init__(self, scripts: list[list[StreamChunk]], model: str = "scripted-v1") -> None:
+        super().__init__(scripts)
+        self._default_model = model
+
+
+def test_run_benchmark_records_the_providers_default_model(tmp_path: Path) -> None:
+    """``--model`` is usually unset, so the report has to ask the provider.
+
+    ``docs/benchmarks/deepseek-36.json`` shipped with ``"model": null``: an
+    evidence file cited for reproducibility that could not say what produced it.
+    """
+    tasks = _task_set(tmp_path / "tasks", "t1")
+    report = run_benchmark(
+        tasks,
+        provider_factory=lambda: _NamedProvider(_solution_scripts()),
+        workdir=tmp_path / "work",
+    )
+    assert report.model == "scripted-v1"
+    assert report.to_dict()["model"] == "scripted-v1"
+
+
+def test_an_explicit_model_still_wins(tmp_path: Path) -> None:
+    tasks = _task_set(tmp_path / "tasks", "t1")
+    report = run_benchmark(
+        tasks,
+        provider_factory=lambda: _NamedProvider(_solution_scripts()),
+        model="pinned",
+        workdir=tmp_path / "work",
+    )
+    assert report.model == "pinned"
+
+
+def test_a_failing_model_probe_does_not_abort_the_run(tmp_path: Path) -> None:
+    """The label is worth having; it is not worth throwing a benchmark away."""
+    tasks = _task_set(tmp_path / "tasks", "t1")
+    calls = {"n": 0}
+
+    def factory() -> LLMProvider:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("no api key")
+        return ScriptedProvider(_solution_scripts())
+
+    report = run_benchmark(tasks, provider_factory=factory, workdir=tmp_path / "work")
+
+    assert report.model is None
+    assert report.passed_attempts == 1, "the attempts still ran"
+
+
+def test_attempt_counters_are_persisted() -> None:
+    """``recoveries`` was counted and then dropped on the way into the archive."""
+    result = TaskResult(
+        task_id="t", title="t", difficulty="simple", attempt=1, outcome="passed"
+    )
+    result.retries = 2
+    result.continuations = 3
+
+    payload = result.to_dict()
+
+    assert payload["retries"] == 2
+    assert payload["continuations"] == 3
+
+
+# ---- the deadline is a cutoff, not a classification ---------------------------
+
+
+class _SlowEmptyTurn(LLMProvider):
+    """One model call that takes longer to start than the deadline allows.
+
+    It emits no deltas at all, which makes DONE the first event to arrive after
+    the deadline — the ordering that exposed the bug.
+    """
+
+    name = "slow-empty"
+
+    def __init__(self, delay: float) -> None:
+        self._delay = delay
+
+    def chat(self, request: ChatRequest) -> ChatResponse:  # pragma: no cover
+        raise NotImplementedError
+
+    def stream_chat(self, request: ChatRequest) -> Iterator[StreamChunk]:
+        time.sleep(self._delay)
+        yield StreamChunk(finish_reason=FinishReason.STOP)
+
+
+def test_a_turn_that_finishes_past_the_deadline_is_graded_not_timed_out(
+    tmp_path: Path,
+) -> None:
+    """The deadline check ran before the DONE branch and threw its result away.
+
+    A run that overran by a hair but *finished* was recorded as ``timeout`` with
+    ``steps=0 / tokens=0`` — the cost was under-reported and the grader never ran.
+    """
+    tasks = _task_set(tmp_path / "tasks", "t1")
+
+    result = run_attempt(
+        tasks.get("t1"),
+        provider_factory=lambda: _SlowEmptyTurn(delay=1.2),
+        sandbox=tmp_path / "sandbox",
+        timeout_s=1,
+    )
+
+    assert result.outcome == "wrong_answer", "the turn completed; it just failed"
+    assert result.steps == 1, "and its step count survived"
 
 
 def test_render_verbose_includes_the_detail_column() -> None:

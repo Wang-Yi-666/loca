@@ -283,22 +283,52 @@ def test_checkpoint_paths_and_context_notes_are_kept(store: SessionStore) -> Non
         )
     )
     recorder.observe(_event(EventType.RECOVERY, reason="length", step=0))
+    recorder.observe(
+        _event(
+            EventType.RECOVERY,
+            reason="provider_retry",
+            detail="attempt 1, backoff 0.50s: ConnectionError: hiccup",
+            step=0,
+        )
+    )
     recorder.observe(_event(EventType.DONE, reason="stop", steps=1, total_tokens=5))
 
     step = recorder.steps[0]
     assert step.step == 3
     assert step.checkpoints == ["a.py", "b.py"]
+    # Two things share the RECOVERY event; they must not share a counter.
+    assert step.continuations == 1, "an output-cap nudge is not a retry"
     assert step.retries == 1
     assert any(note.startswith("summarized") for note in step.context)
-    assert any("length" in note for note in step.context)
+    assert any("output cap" in note for note in step.context)
+    assert any("ConnectionError" in note for note in step.context)
+
+
+def test_reasoning_deltas_land_in_their_own_field(store: SessionStore) -> None:
+    """``StepTrace.reasoning`` was declared, exported, round-tripped — and never written.
+
+    The providers have always produced ``delta_reasoning`` and the loop has
+    always accumulated it; only the trip into the trace was missing, so the
+    field read ``""`` for every real run while the README claimed the trace
+    records what the model was thinking.
+    """
+    recorder = _tracer(store)
+    recorder.observe(_event(EventType.STEP_START, step=0, global_step=0))
+    recorder.observe(_event(EventType.TEXT_DELTA, content="", reasoning="let me think"))
+    recorder.observe(_event(EventType.TEXT_DELTA, content="the answer"))
+    recorder.observe(_event(EventType.DONE, reason="stop", steps=1, total_tokens=1))
+
+    step = recorder.steps[0]
+    assert step.reasoning == "let me think"
+    assert step.text == "the answer", "thinking must not leak into the reply"
 
 
 def test_close_finalizes_an_in_flight_step(store: SessionStore) -> None:
     recorder = _tracer(store)
     recorder.observe(_event(EventType.STEP_START, step=0, global_step=0))
     recorder.observe(_event(EventType.TEXT_DELTA, content="half a rep"))
-
     assert recorder.pending is not None
+
     recorder.close()
 
     assert recorder.pending is None

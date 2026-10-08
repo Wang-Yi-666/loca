@@ -7,7 +7,11 @@ name = "loca"
 version = "0.1.0"
 description = "A lightweight harness for coding agents. Unified tool-use protocol over DeepSeek / OpenAI / Anthropic with streaming, error recovery, and observability."
 readme = "README.md"
-requires-python = ">=3.11"
+# Matches the documented requirement ("Python 3.13+") and the interpreter the
+# suite is actually run on. The code happens to use nothing newer than 3.11
+# syntax, but a floor nobody tests is a promise nobody keeps — so the floor is
+# the tested version, not the theoretically sufficient one.
+requires-python = ">=3.13"
 license = { text = "MIT" }
 authors = [{ name = "loca contributors" }]
 keywords = ["agent", "harness", "tool-use", "coding-agent", "llm"]

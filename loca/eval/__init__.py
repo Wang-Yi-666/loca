@@ -13,6 +13,15 @@ The pieces:
     The runner: seed → run the real agent loop → grade → aggregate.
 ``loca.eval.report``
     Rich and JSON rendering for ``loca bench``.
+
+One thing worth being precise about: the task set is raw Python coding work,
+and the loop it drives is the reference coding agent —
+:data:`loca.agents.CODING_AGENT`, the same prompt and four tools ``loca chat``
+and the web UI use. A score therefore reads "this agent solved N of 36 tasks",
+not "this harness is N% good": change the spec and the number changes while the
+harness does not. ``loca.eval`` sits inside the package because it drives the
+real loop rather than a mock, and it is the only part of the project that is
+tied to one particular agent.
 """
 
 from loca.eval.benchmark import (

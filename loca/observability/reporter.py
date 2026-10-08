@@ -76,6 +76,7 @@ class TraceSummary:
     tool_errors: int = 0
     failures: int = 0
     retries: int = 0
+    continuations: int = 0
     compactions: int = 0
     trims: int = 0
     tools: dict[str, ToolStat] = field(default_factory=dict)
@@ -220,6 +221,7 @@ def to_dict(data: ReportData) -> dict[str, Any]:
             "error_rate": round(summary.error_rate, 4),
             "failures": summary.failures,
             "retries": summary.retries,
+            "continuations": summary.continuations,
             "compactions": summary.compactions,
             "trims": summary.trims,
             "files": list(summary.files),
@@ -392,6 +394,8 @@ def render(
             note = f"[red]{_esc(_one_line(step.error, 48))}[/red]"
         elif step.retries:
             note = f"[yellow]recovered ×{step.retries}[/yellow]"
+        elif step.continuations:
+            note = f"[yellow]continued ×{step.continuations}[/yellow]"
         elif step.context:
             note = f"[yellow]{_esc(_one_line(step.context[0], 48))}[/yellow]"
         finish = step.finish_reason or "?"
