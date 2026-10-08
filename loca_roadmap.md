@@ -350,6 +350,43 @@
 
 ## 本次会话变更日志
 
+### 2026-10-08 — 两份求职文档移出仓库
+
+用户指令：「无关的md确实要收回，先收回」。
+
+`docs/interview-prep.md`（面试手册）与 `docs/resume-project-description.md`（简历描述）
+属于**求职材料，不是项目文档** —— README 的文档索引里从来没有它们。已从仓库移除：
+
+- `git rm --cached` 两份文件：**只从仓库移除，本地文件保留**
+- 同时写进 `.git/info/exclude`（**本地**排除，不提交、不公开），
+  防止以后 `git add docs/` 又把它们加回来
+- 核验过 README 与 6 篇指南**没有任何指向这两份文件的链接** → 无需修断链
+- 本文件里早先 3 处历史提及（变更日志与提交表）**保留不动** —— 那是历史记录
+
+### 2026-10-08 — 推送：三轮工作合成两个提交
+
+`main` 从 `84f634d` 推到 `d4e756a`。44 项未提交拆成两个提交：
+
+| commit | 主题 | 文件数 |
+|---|---|---|
+| `c8d3274` | 26 项修复 + Web 自选工作区 + 检查点/回滚 + 统一装配 | 36（+2820 / -350） |
+| `d4e756a` | README / 指南 / roadmap 同步 | 8（+676 / -92） |
+
+**为什么只能拆成两个**：代码与文档是互不相交的文件集，切得开；但代码那一部分里
+`cli.py` / `core/loop.py` / `web/server.py` / `README` / `roadmap` 各自同时承载了
+26 项修复 + 工作区选择 + 回滚接线 + 装配收口的多批改动，按 path **拆不开**，
+只能合成一个提交 —— 理由写在提交信息正文里。
+
+**新上仓库**：`loca/agents.py`、`loca/workspace.py`、`tests/test_agents.py`；
+**删除**：`scripts/debug_e2e.py`（已被 live 标记的测试取代）。仓库共 **244 个跟踪文件**。
+
+**验证**：以服务端 `git ls-remote --heads origin` 返回的 sha 与本地 HEAD 一致为准 ——
+退出码和本地 tracking ref 都不可信（历史上曾有两个一起骗人）。
+
+**环境发现**：本机装了**两份 PortableGit**（`~\.workbuddy\binaries\` 与
+`WorkBuddy\resources\vendor\`），push 报的锁路径落在 vendor 那份，而原推送脚本只扫 binaries。
+已新增 `.workbuddy/scratch/lock_check.py`，两份都查。
+
 ### 2026-09-26 — 架构收口：`AgentSpec` + 统一装配，修掉 core 的依赖方向
 
 用户问「我感觉现在我的项目把 agent 和 agent harness 有点搞混了」。审查后确认：**分层基本干净，
