@@ -2,7 +2,7 @@
 
 > 6 周路线图 + 实时进度清单。每完成一项就勾选，状态同步更新。
 
-最后更新：2026-09-18 17:06
+最后更新：2026-09-26 16:09
 
 ---
 
@@ -19,7 +19,7 @@
 
 落到代码上的三处约束：
 
-1. `ShellTool` 固定把命令交给 cmd.exe —— `shell=True` + `executable=_shell_executable()`（仅当 `%COMSPEC%` basename 是 `cmd` 才用，否则回退 `cmd.exe`），不支持 POSIX 分支。工具描述与系统提示词都写明"用 `dir`/`type`/`del`，不是 `ls`/`cat`/`rm`"。
+1. `ShellTool` 固定把命令交给 cmd.exe —— `shell=True` + `executable=_shell_executable()`（仅当 `%COMSPEC%` basename 是 `cmd` 且该文件确实存在才用，否则回退 `%SystemRoot%\System32\cmd.exe` 的**绝对路径**；两者都找不到就直接报错，绝不交出一个相对路径），不支持 POSIX 分支。工具描述与系统提示词都写明"用 `dir`/`type`/`del`，不是 `ls`/`cat`/`rm`"。
 2. 命令行渲染改用 cmd 的引号风格（整行双引号、内部引号翻倍），不再用 `shlex.quote` 的 POSIX 单引号。
 3. `--workspace` 直接拒绝 `/d/repo` 形态：`ntpath` 会把它当盘符相对路径，静默解析成 `D:\d\repo`（空目录）—— 「不报错但结果全错」，必须挡在门口。
 
@@ -35,6 +35,11 @@
 | 4 | Session 持久化 + Checkpoint | ✅ 完成 | 100% |
 | 5 | 可观测性 + 多 Provider | ✅ 完成 | 100% |
 | 6 | Benchmark + 报告 | ✅ 完成 | 100% |
+| 7 | 审查 + 缺陷修复（P1/P2/P3 共 26 项） | ✅ 完成 | 100% |
+
+> 2026-09-26 追加：Week 7 之后又做了一轮**架构收口** —— 抽 `AgentSpec` + `build_agent()` 统一
+> 三个入口的装配，拆掉 core → observability 的运行时依赖，并把系统提示词从 core 挪进 agent 定义。
+> 详见文末变更日志。
 
 ---
 
@@ -344,6 +349,228 @@
 ---
 
 ## 本次会话变更日志
+
+### 2026-09-26 — 架构收口：`AgentSpec` + 统一装配，修掉 core 的依赖方向
+
+用户问「我感觉现在我的项目把 agent 和 agent harness 有点搞混了」。审查后确认：**分层基本干净，
+但「谁是谁」没有名字**。本轮把它补上。
+
+**查到的四件事**（都有实证）：
+
+- **一条方向错的边**：`core/loop.py` 为了一个**类型注解**直接 `import CheckpointManager`，而
+  `observability/trace.py` 又 `import loca.core.events` —— core ↔ observability **双向依赖**。
+  对照 `providers/base.py` 用的是 `ABC`（依赖接口）——同一类需求在两处做法不一致。
+- **系统提示词是策略却写在 core 里**：`AgentLoop.DEFAULT_SYSTEM_PROMPT` 里同时有「a coding assistant」
+  「running on Windows」「cmd.exe，用 dir 而不是 ls」三层决策，没有一层属于 harness。
+- **工具集是进程级全局**：`register_default_tools()` 往模块级 `_REGISTRY` 里塞，而 `AgentLoop` 在没传
+  `tools=` 时用 `all_tools()` 兜底 —— **harness 的默认行为 = 那个 coding agent 的工具集**。
+- **「agent 是谁」没有名字**：答案散在三个入口的装配代码里（`cli.py` / `eval/benchmark.py` /
+  `web/server.py`），每个入口都要独立记住约 8 个可选子系统的正确组合。**Web 已经因此漏了两次**
+  —— 上一轮漏检查点；这一轮漏 `ContextManager`（浏览器里聊长了会静默丢掉最早的轮次，
+  而 `index.html` 里渲染 `context_summarized` 的分支同样是死代码）。
+
+**改动**：
+
+- **新增 `loca/agents.py`** —— `AgentSpec`（`name` / `system_prompt` / `tool_names` / `max_steps` /
+  `token_budget` / `keep_recent` / `track_files`）+ 项目自带的 `CODING_AGENT` +
+  `build_agent(spec, ...) -> AgentRuntime(loop, ctx, recorder)`。工具按**名字**解析，名字打错在装配时
+  就报错并列出可用的名字（不再可能悄悄给模型一个更小的工具集）。
+- **三个入口全部改走 `build_agent()`** —— `cli.py` / `web/server.py` / `eval/benchmark.py` 各自那
+  20~30 行装配代码删掉。Web 由此**自动获得上下文压缩**，也就是本轮那个 bug 的修复。
+- **core 解耦** —— `CheckpointManager` 的 import 挪进 `TYPE_CHECKING`（循环只调它的 `capture()`，
+  需要的是能力不是类）；`AgentLoop.DEFAULT_SYSTEM_PROMPT` 换成中性兜底（"You are a helpful
+  assistant…"），Windows / cmd.exe 那一套挪进 `CODING_AGENT`。
+- **`loca/eval/__init__.py`** 写清：评的是**建在 harness 上的那个 agent**，不是 harness 本身。
+- **测试 +18 项** —— 新增 `tests/test_agents.py` 17 项：spec 完整性、装配矩阵（有/无 store、
+  `budget=0`、`track_files=False`、显式工具表、step 计数器续接、工具名打错报错、trace 开关），
+  外加**在子进程里**断言 `import loca.core.loop` 不会把 `loca.observability` 带进来；
+  `tests/test_web_server.py` +1：spy 住 `build_agent`，断言真正跑起来的那只 loop
+  **`checkpoint_manager` 与 `context_manager` 都非空**。
+- **一条结构测试**（`test_entry_points_assemble_through_the_builder`）：入口模块不许出现
+  `= AgentLoop(`，且必须调用 `build_agent(`。这类 bug 的形状是「某个入口少记了一个参数」，
+  运行时只表现为「用户发现有功能不见了」——源级拦更早。
+
+> 设计取舍：
+> 1. **`build_agent` 保留显式 override**（`max_steps` / `token_budget` / `tools` / `system_prompt` …），
+>    默认值全部来自 spec。入口的 flag 仍能覆盖，但"忘记传"不再等于"少一个能力"。
+> 2. **没有让 `AgentLoop` 强制要求 `tools=`** —— 那会破坏「不传任何子系统也能跑」这条既有承诺，
+>    也牵动大量现有测试。spec 负责**命名**，循环保持**可脱机运行**。
+> 3. **`eval` 保留显式 `tools` 注入** —— 评测本来就可以换工具集，不该被 spec 钉死。
+
+**明确没做**：不拆包、不搬文件。问题不是目录结构，而是「谁是谁」没有名字 —— 拆包只会把同一份混乱
+摊到更多地方。
+
+验证：`ruff check .` 全绿；离线 **466 passed, 0 skipped**（原 448 + 18）；联网 `-m live` **8 passed**。
+
+**未做**：git 未提交（用户未发话）。
+
+### 2026-09-26 — 检查点接进 Web GUI，REPL 补 `/rollback`
+
+用户反馈：「我在测试的时候，为什么没有看到 checkpoint，应该有撤回回退机制」。**先查现状**：
+
+- CLI 一直**有**检查点（`cli.py` 里挂着 `CheckpointManager(store)`，只要没加 `--no-save`），
+  每次文件改动会打印一行 `⛁ checkpoint @ step N`。
+- 真正缺的是 **Web GUI**：`web/server.py` 构造 `AgentLoop(provider=provider)` 时**没传
+  `checkpoint_manager`**，而 `loop._capture_checkpoint()` 在它是 `None` 时第一行就返回 —— 所以
+  `CHECKPOINT` 事件**永远不会产生**。`index.html` 里那段渲染 `⛁ checkpoint` 的代码因此是**死代码**，
+  在页面上一次都不可能被触发；同时服务端**没有任何回滚入口**（只有 `/api/chat`）。
+- 还埋着一个隐性问题：Web 每轮新建 `ToolContext(step_index=0)` 且不落库。就算把检查点接上，
+  每轮的检查点也都会落在 **step 0**；而回滚语义是「撤销该步**及其之后全部**」，那样根本没法只撤销
+  某一轮。
+
+改动：
+
+- **`web/server.py`** —— 新增 `open_store()`：**每个请求开一个连接**，指向 CLI 用的同一个
+  `~/.loca/sessions.db`（或 `$LOCA_DB`）。为什么不复用模块级单例：sqlite3 连接**绑定创建它的线程**，
+  而 ASGI 服务器可以把不同请求放到不同线程（Starlette 的 `TestClient` 就是每请求一个 portal 线程），
+  单例只是"碰巧能用"。WAL + busy_timeout 让每次开连接既便宜又安全。
+- **会话 id** —— `ChatTurn` 增加 `session_id`；服务端把它作为**流的第一个事件**
+  （`{"type":"session","id":...}`）播出去，客户端回传即可续在同一会话里。空值 = 开新会话；
+  形状不对 = 报错，而不是"静默换成新会话"（沿用拒绝 `/d/repo` 的同一条原则）。
+- **接上检查点与 step 计数器** —— `AgentLoop(..., checkpoint_manager=CheckpointManager(store))`；
+  `ctx.step_index` 取自 `store.next_step(session_id)`，每轮结束 `set_next_step` + `save_transcript`，
+  于是浏览器里开的会话在 `loca sessions show` / `loca report` / `loca rollback` 里都是**一等公民**。
+- **`POST /api/rollback`** —— 返回 `{ok, step, applied, files, skipped}`，**不抛异常**（前端直接显示
+  message）。刻意**不传 `workspace`**：网页允许每轮换工作区，而每个检查点都记着自己是在哪个目录拍的，
+  回滚必须写回**各自原来的目录**；用"当前工作区"会把 A 目录的内容灌进 B 目录。
+- **`web/index.html`** —— 顶栏显示 `session <id>`；checkpoint 那行后面直接挂一个 `↩ undo` 按钮
+  （先确认 → 回调 → 用 note 汇报每个文件的最终动作）；底部提示改成「file edits are checkpointed」。
+- **`loca/cli.py`** —— REPL 增加 `/rollback [step]`（不带参数 = 撤销最近一次文件改动，因为对操作的人
+  而言"撤销"天然就是"撤销刚才那一下"）；`run_turn` 打印的 checkpoint 行末尾追加 `/rollback N to undo`
+  —— **没人注意到的检查点等于没有检查点**。回滚输出抽成 `_rollback_report_lines()`，由 `loca rollback`
+  与 REPL 共用，避免两处文案各写一套。
+- **测试 +15 项**：`tests/test_web_server.py` +10 —— 含一条 autouse 的 `$LOCA_DB` 隔离夹具（否则这些
+  测试会往开发者真实的 `~/.loca/sessions.db` 里写会话和文件快照）；其中两条是核心：**「两轮的 step
+  必须递增」**（否则无法只撤销某一轮）和**「同名文件在两个工作区里各自还原成各自的快照」**。
+  `tests/test_cli.py` +5（`/rollback` 裸用 / 指定 step / 越界 / 非数字 / 无会话）。
+- **文档**：`docs/sessions-and-rollback.md` 补「不想离开 REPL 就敲 `/rollback`」与「在 Web GUI 里也一样」；
+  `docs/running-the-web-gui.md` 补「改坏了能撤回」一节 + 4 行 FAQ + 速查；`README.md` 中英各补一段，
+  测试计数 **426 → 448**。
+
+验证：`ruff check .` 全绿；离线 **448 passed, 0 skipped**（原 433 + 15），联网 8 项不变；另跑了一次
+**真实端到端**（`.workbuddy/scratch/e2e_web_undo.py`：起真 uvicorn + 真 DeepSeek，让它改写
+`notes.txt` → 捕获到 `checkpoint step=0 files=['notes.txt']` → `POST /api/rollback` →
+`{"ok":true,"applied":1,"files":[{"path":"notes.txt","action":"restored"}]}` → 文件从 `CHANGED` 回到
+`ORIGINAL`）。
+
+**未做**：git 未提交（用户未发话）。
+
+### 2026-09-26 — Web GUI 支持自选工作区
+
+用户发现「Web 界面不能选工作区」并提出补上。**先确认现状**：CLI 其实早就有 `--workspace`
+（`loca chat` 与 `loca rollback` 都有），真正定死的是 Web GUI —— `web/server.py` 把
+`DEFAULT_WORKSPACE`（项目根）直接塞进 `ToolContext`，旁边还留着一条作者自认的注释
+「In a real product this would be configurable per-session」。范围经确认为**只补 Web 入口**
+（不加配置文件、不加环境变量、不做 REPL 内切换）；安全边界选**允许填任意本地路径**
+（与 CLI 能力对齐，前提是服务只监听 `127.0.0.1`）。
+
+改动：
+
+- **新增模块 `loca/workspace.py`** —— `resolve_workspace()` 从 `cli.py` 搬来，成为 CLI 与 Web
+  共用的**唯一一份**工作区解析。理由是 Web 不该反过来 import CLI 模块（两个前端应当平级），
+  而复制一份规则必然漂移。`cli.py` 改为 `from loca.workspace import resolve_workspace`
+  （`loca.cli.resolve_workspace` 仍可访问，原有 4 项测试一行没改），顺手清掉不再需要的 `import re`。
+- **`web/server.py`** —— `ChatTurn` 增加 `workspace` 字段；新增 `_workspace_for()`：空值回落默认、
+  路径**必须已存在**、必须是目录、拒绝 Git-Bash 形态；`chat()` 在解析 provider **之前**先解析它，
+  失败则发 `error` 事件（而不是抛异常），前端已有的红条渲染直接复用。
+- **策略差异是刻意的**：CLI 会 `mkdir` 创建缺失的工作区（操作者亲手敲的路径），Web **拒绝**。
+  因为网页输入框更容易打错字，而自动建一个空目录会让 agent 在假目录里干活 —— 这正是项目拒绝
+  `/d/repo` 的同一个理由：**「不报错但结果全错」是最贵的一类 bug**。
+- **`web/index.html`** —— 顶栏右侧加 workspace 输入框（初值取自 `/api/health`），发消息时带上该字段；
+  切换目录会在对话里插一行 `workspace · D:\...`，避免"忘了改"变成静默错误。刻意**不做持久化**：
+  刷新回默认值，不留隐藏状态。
+- **测试 +7 项**（`tests/test_web_server.py`）。其中一条是**行为级**的：把 `pyproject.toml` 种进
+  `tmp_path`，跑一轮 `read_file`，断言读回来的**不是**项目根那份 —— 证明这个字段真的到了工具里，
+  而不是"收下即忽略"；另有「坏路径必须在调 provider 之前报出来」（断言 `provider.calls == 0`）、
+  不存在的目录 / 文件而非目录 / Git-Bash 形态各自被拒、以及空值回落默认。
+- **文档**：`docs/running-the-web-gui.md` 补「换个目录干活：工作区」一节，并修正两处因本次改动
+  而变错的说法（`default_workspace` 曾被写成"工具的活动范围"，实际它只是页面输入框的初值）；
+  `README.md` 中英各补一句。
+
+验证：`ruff check .` 全绿；离线测试 **433 passed**（原 426 + 新增 7），0 skipped；
+并断言 `loca.cli.resolve_workspace is loca.workspace.resolve_workspace`，确认没有残留副本实现。
+
+**未做**：git 未提交（用户未发话）。工作区现在堆着 26 项修复 + 本次改动。
+
+### 2026-09-18 — 缺陷修复：审查报告的 26 项全部修掉（P1 3 + P2 12 + P3 11）
+
+用户指令：「你现在再尝试一下能不能修复问题」。范围经确认为**全清（P1 + P2 + P3 共 26 项）**；
+其中 B8（归档报告不记录模型名）**只改代码路径、不重跑基准** —— 重跑一次 36 题要花真钱，
+而 `model` 字段的修法本身与跑分无关。
+
+**修掉的 P1（3 项）**
+
+| # | 问题 | 修法 | 验证 |
+|---|---|---|---|
+| A1 | shell 超时不是上限，`timeout=2s` 实测跑 8.09 秒 | `execute()` 改走新的 `_run_command()`：`Popen(CREATE_NEW_PROCESS_GROUP)` + 两个守护线程抽干 stdout/stderr，`wait(timeout)` 超时后 `taskkill /F /T /PID` 整树杀 | 同一复现场景 **8.09s → 2.24s**；超时后按命令行匹配 `time.sleep(30)` 的进程数为 **0**（PowerShell `Get-CimInstance`） |
+| A2 | `_shell_executable()` 回退裸 `"cmd.exe"`，在它唯一该生效的场景（`%COMSPEC%` 被换成 PowerShell）下 100% 失效 | 新增 `_system32_exe()`；只返回**已验证存在的绝对路径**，都找不到就 `RuntimeError` | 原测试只断言返回字符串，改为**真的跑一条命令**；另加一条把 `%COMSPEC%` 指向 PowerShell 后跑命令的测试 |
+| A3 | 同一步内多次改动同一文件，回滚还原成中间版本 | `CheckpointRow` 补 `id`，排序键改成 `(step, id)` 复合逆序 | 同一步 v1→v2→v3 后 `rollback(sid, 1)` → 文件被**删除**（正确语义） |
+
+**修掉的 P2（12 项，B1–B12）**
+
+- **B1** `read_file` 无总量上限（实测 5,000 行返回 290,202 字符）→ 加 `_MAX_LINES = 2000` +
+  `_MAX_BYTES = 100_000`，并在截断提示里给出续读办法（`start_line=N`）。
+- **B2** `_snapshot()` 的 `read_bytes()` 在 `try` 外（TOCTOU 会抛 `OSError` 打断任务）→ 包进 try；
+  `capture()` 落库也加了兜底 —— 检查点机制现在真的「纯观察，绝不搞死这一轮」。
+- **B3** OpenAI 流式不请求 usage（`DONE.total_tokens` 恒 0）→ 补 `stream_options={"include_usage": True}`，
+  并按 provider 提供 `LOCA_*_STREAM_USAGE` 开关（vLLM / Ollama 这类网关不一定认这个字段）。
+- **B4** `map_finish_reason(None)` 落到 `ERROR`（除末帧外每帧都是 `None`）→ 只在 reason 为真时映射；
+  那条因此退化成空断言的测试被改成三个真断言。
+- **B5** 超时路径绕过截断、且把 stdout/stderr 拼接 → 走 `_truncate`，两条流分开渲染。
+- **B6** `edit_file` 把整个文件的 LF 改写成 CRLF → `open(..., newline=_detect_newline(raw))`，
+  且查找时把文件与查找串都归一到 LF 再匹配。
+- **B7/B9** 任务集自检把「缺参考答案」判为合格；`recoveries` 计数不落盘 →
+  `ok` 现在要求 `passes_with_solution is True`；计数拆成 `retries` + `continuations` 并写入 `to_dict()`。
+- **B8** 归档报告 `"model": null` → provider 增加 `resolved_model` 属性，`run_benchmark` 在
+  `model is None` 时探测并记录；探测失败只告警，不中断整轮。
+- **B10** trace 把「续写」计成「重试」→ 语义拆开（`RECOVERY reason="length"` = 续写），
+  并把 `RetryingProvider` 的 `on_retry` 钩子真正接进循环，重试现在有独立的 `provider_retry` 事件。
+- **B11** `sessions rm` 报的 checkpoint 数恒为 0、且不删 JSONL 镜像 → 先数再删，并显式移除镜像文件。
+- **B12** deadline 检查排在 `DONE` 之前，刚跑完的尝试被记成 `timeout`（步数/tokens 归零）→
+  挪到 `DONE` 分支之后。**这条做了反向验证**：把顺序改回去，新测试立刻失败，再改回来 —— 证明测试真的能抓。
+
+**修掉的 P3（11 项，C1–C11）**
+
+- **C1** 评测集口径 → 文档统一为「**36 题 / 161 个夹具文件 / 3,103 行**（另有 4 个一次性生成脚本 3,484 行）」。
+  复核发现 README 与简历其实已经没有那个旧数字，真正还留着的是审查报告本身（作为问题描述保留）。
+- **C2** README 的 launch.json 配置表补齐 2 个（`loca chat --session (resume)` / `loca sessions (list)`），
+  中英两侧同步 —— 现在表里的 9 条与文件里的 9 条一致。
+- **C3** `requires-python` 由 `>=3.11` 改成 `>=3.13`，与 README / roadmap / 简历统一，
+  并写明理由：代码语法上 3.11 也够，但**没人测过的下限就是没人守的承诺**。
+- **C4** `StepTrace.reasoning` 是「声明了但从不写入」的死字段 → 循环把 `delta_reasoning` 发成
+  `TEXT_DELTA` 的独立通道，trace 累积进 `reasoning`（且**不污染 `text`**），Web GUI 单独渲染「thinking」。
+- **C5** `settled()` 靠 `split(" (", 1)` 猜路径 → `RollbackReport.skipped` 改成
+  `skips: list[tuple[str, str]]`（路径与原因分开存）。`docs/report (final).md` 不再是 `docs/report`。
+- **C6** `run_benchmark` docstring 与实现不符（说保留 `workdir`，实际 `finally` 必删）→ 改 docstring，不假装。
+- **C7** `filesystem.py` 的沙箱声明越界（shell 本来就故意不沙箱，`type` 一句就绕过）→
+  改成「文件工具的路径沙箱」并明说 shell 不在此列；顺手删掉硬编码的开发者本机用户名。
+- **C8** roadmap Week 1 的 `NotImplementedError` stub 条目 → 加「已过时」批注（历史保留，不代表当前代码）。
+- **C9** 死代码清理 → 删掉 `SessionStore.delete_checkpoints`、`CheckpointManager.list_checkpoints`、
+  `trace.iter_steps`（连 `__all__` 导出）、`tools/registry.get()`、`ChatRequest.stream`（连它的 2 处生产写入
+  与 4 处测试写入 —— 流不流式由调 `chat()` 还是 `stream_chat()` 决定，这个字段没有任何读点）。
+  **`Usage.reasoning_tokens` 判定为不是死代码**：它在 `openai_compat.py` 里被真实赋值（DeepSeek 的
+  `completion_tokens_details.reasoning_tokens`），只是还没流到报告层。删掉等于丢失 provider 已经给出的数据，
+  所以保留，并把它作为「已被赋值但还没上浮到报告层」记在这里。
+- **C10** trace 的 `_persist` 用 `except Exception: pass` 静默吞异常 → 两个 sink 各自
+  `_log.warning`，告警里点明是哪一路丢了哪一步。observability 自己出问题，至少要能出声。
+- **C11** `scripts/debug_e2e.py`（自述 one-off、且调真实 API）→ 按项目约定移到
+  `.workbuddy/scratch/`（gitignored + ruff 跳过），`scripts/` 现在只剩 README 里写过的薄启动器。
+
+**测试统计（修复后）**：`ruff check .` 全绿；离线 `-m "not live"` → **426 passed, 0 skipped**；
+联网 `-m live` → **8 passed**；合计 **434 项**（21 个测试文件）。
+修复过程新增 **28 项**测试，覆盖上面每一条的边界；顺手把那条「`no .bashrc on this system` 的条件跳过」
+改成了用真实沙箱外的文件做断言 —— **跳过项从 1 变成 0**，不是把它删了。
+`loca bench verify` 复核 **36/36 题**仍旧「起始判不过 + 参考答案判得过」。
+
+**新增/更新的文档**：`docs/project-audit.md` 加 §9 修复记录与逐条勾选；
+`docs/interview-prep.md`、`docs/resume-project-description.md`、`README.md` 的数字同步为
+**8,380 行 harness / 7,520 行测试 / 434 项**。
+
+**新增脚本**（`.workbuddy/scratch/`，gitignored）：`run_files.py`（跑指定测试文件 + JUnit 汇总）·
+`count_tests.py`（三种分流的用例数）· `recount_all.py`（复算文档里每个数字的口径）·
+`audit_c1_numbers.py`（评测集文件/行数分组统计）。
+
+**未做**：**git 仍未提交** —— 用户在本次只说了"修复"，没说提交。
 
 ### 2026-09-18 — 提交推送：Week 4-6 的改动按 5 批提交并推送到 GitHub
 

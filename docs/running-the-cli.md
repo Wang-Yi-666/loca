@@ -210,9 +210,9 @@ loca **只跑 Windows**（shell 固定是 cmd.exe，点这里看 [运行环境](
 | `--workspace <目录>` | 当前目录 | 指定工具的活动范围 |
 | `--no-tools` | 关 | 不暴露工具，纯聊天。用来隔离"是模型的问题还是工具的问题" |
 | `--max-steps <N>` | `20` | 一轮最多调几次模型，防止它绕圈绕不停 |
-| `--token-budget <N>` | `48000` | 上下文预算，超了就自动丢掉最早的对话 |
-| `--system "<提示词>"` | 内置 | 换掉系统提示词，改它的行为风格 |
-| `--provider <名字>` | `deepseek` | 换厂商（OpenAI / Anthropic 目前是占位实现，还没接） |
+| `--token-budget <N>` | `48000` | 上下文预算。超了就让模型把最早的对话**压成摘要**（加 `--no-summarize` 才退回「直接丢掉」）；填 `0` 完全关闭 |
+| `--system "<提示词>"` | `CODING_AGENT` 的 | 换掉系统提示词，改它的行为风格 |
+| `--provider <名字>` | `deepseek` | 换厂商。DeepSeek / OpenAI / Anthropic 都已实现，Anthropic 需要 `pip install "loca[anthropic]"` |
 
 用法示例（终端里）：
 

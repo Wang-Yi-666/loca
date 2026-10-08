@@ -186,6 +186,39 @@ deleted  hello.py (did not exist before that step)
 | **默认只认 `write_file` / `edit_file`** | 这两个是「改文件」的工具。要加别的，在 `CheckpointManager(tracked=...)` 里注册 `{工具名: (参数名,)}` 即可。 |
 | **不会动工作区以外的东西** | 快照和还原都走同一套沙箱检查，`../` 越界一律拒绝。 |
 
+### 不想离开 REPL？敲 `/rollback`
+
+以前撤销要"退出会话 → `loca sessions show` 找到 step → 再 `loca rollback`"，中间隔着两个进程。REPL 里现在直接可用：
+
+```
+you › /rollback          # 撤销最近一次文件改动（= 最后那个检查点）
+you › /rollback 2        # 撤销第 2 步及其之后的全部改动
+```
+
+不带参数时它取**最后一个检查点**的 step —— 因为对操作的人而言「撤销」天然就是「撤销刚才那一下」。输出和 `loca rollback` 一字不差（两处共用同一个渲染函数，不会各写一套）。
+
+### 在 Web GUI 里也一样
+
+浏览器页面里，每个检查点都会在对话中留下一行，后面直接跟着一个撤销按钮：
+
+```
+⛁ checkpoint @ step 3 · notes.txt   [ ↩ undo from step 3 ]
+```
+
+点它 → 确认 → 调 `POST /api/rollback`，语义与 `loca rollback demo 3` 完全相同。区别只有两点：
+
+- **工作区可能中途换过。** 网页允许每轮改工作区，所以回滚**不会**用"你当前指着的目录"，而是用**每个检查点自己记录的那个工作区** —— 否则两个目录里同名的文件会被写串。CLI 一个会话只认一个工作区，不存在这个问题。
+- **对话不会跟着回退。** 磁盘上的文件还原了，聊天记录里那几句"我已经改好了"还在。以文件为准。
+
+顶栏会显示这次对话的 `session <id>`。刷新页面会**新开一个会话**（旧会话和它的检查点仍在库里），所以想接着撤销旧会话，就把那个 id 复制到终端：
+
+```bash
+loca sessions show 20260926-131621-a1b2c3    # 看检查点清单
+loca rollback 20260926-131621-a1b2c3 3       # 和点按钮等价
+```
+
+> Web 端和 CLI 用的是**同一个** `~/.loca/sessions.db`，所以两边可以互相接手 —— 这正是把会话落盘、而不是只在内存里维护一份历史的意义。
+
 ---
 
 ## 六、上下文压缩（顺带升级）
@@ -222,7 +255,7 @@ you › /compact
 compacted: earlier turns folded into a summary
 ```
 
-另外 `/help` 看命令、`/session` 看当前会话 id 和消息数。
+另外 `/help` 看命令、`/session` 看当前会话 id 和消息数、`/rollback` 撤销文件改动。
 
 > **一个细节**：摘要被存成一条 `user` 消息（带 `[Earlier conversation summary]` 标记），不是 `system` 消息。因为回灌历史时会滤掉 `system`（防止系统提示词重复插入），存成 `system` 的话摘要会在恢复会话时消失。
 
@@ -232,6 +265,9 @@ compacted: earlier turns folded into a summary
 
 **Q：`rollback` 说 `no checkpoints at step N or later`，什么意思？**
 那个 step 范围内没有检查点。多半是：这步只跑了 `shell`，或者只调了 `read_file` 这种不改文件的工具。用 `loca sessions show <id>` 看真实的检查点清单。
+
+**Q：聊了好几轮，一个 `⛁ checkpoint` 都没看到？**
+说明这几轮里没有**写文件**的工具调用 —— 只有 `write_file` / `edit_file` 会产生快照，`read_file` / `shell` 都不会（`shell` 改了文件也不记，这正是它撤不回来的原因）。另一个可能是 CLI 加了 `--no-save`：那时既不落库也不做检查点，是刻意的一次性模式。
 
 **Q：`rollback` 输出里有 `skipped`？**
 三种可能：文件超过 2 MB（没存内容）、快照指向工作区外、或者没有权限写入。原因都写在括号里。
@@ -267,8 +303,14 @@ loca rollback demo 0                  # 撤销这次会话的所有文件改动
 # REPL 内
 /help                                 # 帮助
 /compact                              # 手动压缩上下文
+/rollback                             # 撤销最近一次文件改动
+/rollback <step>                      # 撤销第 step 步及其之后
 /session                              # 当前会话信息
 exit                                  # 退出（也可 quit / :q / Ctrl-C）
+
+# Web GUI 里
+#   对话里 ⛁ 那行后面的 ↩ undo        # 等价于 loca rollback <session> <step>
+#   顶栏 session <id> 可复制到终端接手
 
 # 常用参数
 --db <path>         会话数据库位置（默认 ~/.loca/sessions.db）

@@ -29,6 +29,7 @@ Loca 刻意把体量压小 —— 不用 LangChain，不用 LlamaIndex，没有�
 ```
 loca/
 ├── cli.py        # `loca chat` / `sessions` / `rollback` / `report` / `serve` / `tools` / `providers`
+├── agents.py     # 具名 agent 定义（提示词 / 工具集 / 限额）+ 唯一装配点 build_agent()
 ├── providers/    # 厂商中立的 LLM 接口 + DeepSeek/OpenAI/Anthropic 实现
 ├── tools/        # 工具协议 + read_file/write_file/edit_file/shell + 注册表
 ├── core/         # 执行循环、事件、错误恢复、上下文压缩
@@ -74,14 +75,15 @@ DeepSeek 默认模型、36 个自带任务、每题 1 次、4 并发 —— **pa
 - **四个工具** —— `read_file`、`write_file`、`edit_file`、`shell` —— 带路径沙箱、输出截断、超时控制，以及 `LOCA_*` 环境变量隔离。
 - **错误恢复** —— 瞬时故障（限流 / 超时 / 5xx）走指数退避重试，且**只在第一个流式分片到达前重试**，用户已经看到的内容不会被重放；回复被输出长度截断时自动追加「继续」；上下文即将溢出前裁剪旧消息。
 - **会话可以断点续聊** —— 每轮结束写进 SQLite（默认 `~/.loca/sessions.db`）。`loca chat --session <id>` 在新进程里接着上次聊；`loca sessions` 列出、查看、删除。
-- **文件改动可回滚** —— `write_file` / `edit_file` 执行前先存快照，`loca rollback <session> <step>` 把工作区还原到任意一步之前；新建的文件会被删掉而不是清空。
+- **文件改动可回滚** —— `write_file` / `edit_file` 执行前先存快照，`loca rollback <session> <step>` 把工作区还原到任意一步之前；新建的文件会被删掉而不是清空。REPL 内可直接 `/rollback`（不带参数 = 撤销刚才那一下），Web GUI 里每个检查点都带一个 `↩ undo` 按钮，两条路走的是同一份快照。
 - **上下文压缩** —— 预算耗尽时让模型把旧消息压成一段摘要（而不是直接丢弃），摘要会钉在窗口里；REPL 里可 `/compact` 手动触发。
 - **每一步都可追踪** —— 每「模型步」记录 prompt 摘要、回复、推理内容、工具调用与结果、token、耗时、重试次数与检查点，双写 SQLite（`traces` 表）与 JSONL 镜像；`loca report <session>` 把它渲染成表格，`--verbose` 展开细节，`--json` 供脚本消费，`--no-trace` 可整轮关掉。
 - **三家 provider 都可用** —— DeepSeek 与 OpenAI 共用一层 OpenAI 兼容实现（`providers/openai_compat.py`），Anthropic 走独立的协议翻译层（消息、工具、流式事件、缓存 token 都做了映射）；同一任务在三家上的工具调用与流式结果有一致性回归测试钉住。
 - **失败不会打断流** —— 不可恢复的 provider 错误以 `error` 事件呈现，而不是掐断 SSE 连接。
 - **自带评测集，能证明自己行不行** —— `loca bench run` 把 36 个任务（14 简单 / 12 中等 / 10 困难）并发跑一遍，每个任务跑的是**真实的执行循环和真实的工具**，评分也是**行为式**的（跑 pytest / 比 stdout / 调校验脚本），不看代码 diff。评分文件放在 `hidden/`：agent 看不到，判分前才盖回沙箱 —— 模型改自己的测试文件是没用的。输出 pass@1、pass@k、按难度的分解、失败归因和 token / 步数成本，支持 `--json`、`--compare` 多 provider 对比。
 - **任务集自身也有测试** —— `loca bench verify` 逐题确认「起始工作区必须判不过、参考答案必须判得过」。一道题若初始就通过，它什么都没在测；一道题若参考答案都过不了，它报的每个失败都是噪音。
-- **397 项离线测试**（另 1 项按条件跳过）+ 8 项真实 DeepSeek e2e 测试。
+- **harness 和 agent 是分开的** —— 执行循环不认识「coding」这个词，它只依赖 `LLMProvider` 和工具协议两个抽象（`core/` 连 `observability/` 都只在类型注解里出现）。提示词、工具集、步数上限、token 预算这些**策略**集中在 `loca/agents.py` 的 `AgentSpec` 里，项目自带的是 `CODING_AGENT`；CLI、Web GUI、Benchmark 三个入口都调同一个 `build_agent()` 装配，所以任何一个入口都不会漏挂一样能力（检查点、上下文压缩、轨迹）。有一条测试专门钉住这件事：入口模块不许自己 `new` 循环。
+- **466 项离线测试**（无跳过项）+ 8 项真实 DeepSeek e2e 测试。
 
 ## 运行环境
 
@@ -96,8 +98,8 @@ DeepSeek 默认模型、36 个自带任务、每题 1 次、4 并发 —— **pa
 | Python | 3.13+ |
 
 所以 `shell` 工具跑的是 cmd.exe —— 用 `dir` / `type` / `del` / `findstr`，
-而不是 `ls` / `cat` / `rm` / `grep`。默认系统提示词里已写明这一点，模型不会拿
-POSIX 命令去撞南墙。
+而不是 `ls` / `cat` / `rm` / `grep`。`CODING_AGENT` 的系统提示词里已写明这一点，
+模型不会拿 POSIX 命令去撞南墙。
 
 > `--workspace /d/repo` 这种 Git-Bash 写法会被**直接拒绝**并提示正确路径。因为
 > `ntpath` 会把它当成**盘符相对路径**，悄悄解析成 `D:\d\repo` —— 一个空目录。
@@ -154,11 +156,15 @@ assistant status 那一节说的是 ...
 | `loca tools` | 列出已注册工具及其必填参数 |
 | `loca providers` | 显示哪些 provider 已配好凭据 |
 
-会话默认存在 `~/.loca/sessions.db`（用 `--db` 或 `$LOCA_DB` 改）。REPL 内还有 `/help`、`/compact`、`/session`、`/trace` 四个命令。
+会话默认存在 `~/.loca/sessions.db`（用 `--db` 或 `$LOCA_DB` 改）。REPL 内还有 `/help`、`/compact`、`/rollback`、`/session`、`/trace` 五个命令。
 
 ### 2. Web GUI —— `loca serve`
 
 `web/` 下是 FastAPI + SSE 后端和一个单页聊天 UI（`web/index.html`，无构建步骤）。起服务后打开 <http://127.0.0.1:8765>，在浏览器里直接聊。流式文本、工具调用、工具结果和错误都会渲染成独立的气泡。
+
+页面顶栏可以填 **workspace**，决定这一轮 agent 在哪个目录里干活（默认是项目根目录）。填的目录必须**已经存在** —— 填错会立刻报错，而不是静默创建一个空目录；并且只接受 Windows 路径（`/d/repo` 会被拒绝）。详见 [`docs/running-the-web-gui.md`](docs/running-the-web-gui.md)。
+
+每一轮也都属于一个**会话**（和 CLI 共用 `~/.loca/sessions.db`，顶栏显示它的 id）。文件改动前会先存快照，对话里出现 `⛁ checkpoint @ step N` 并带一个 `↩ undo` 按钮，点它就是 `loca rollback <session> <step>`；反过来，浏览器里开的会话也能用 `loca sessions show <id>` 在终端里查、在终端里回滚。
 
 ## 在 VS Code 里运行
 
@@ -170,6 +176,8 @@ assistant status 那一节说的是 ...
 | `loca chat (sandboxed to playground/)` | 同样的 REPL，但沙箱到空的 `playground/`，方便随便造文件 |
 | `loca chat --no-tools` | 只跑流式对话，用来隔离 provider 层问题 |
 | `loca serve (Web GUI)` | 启动 uvicorn **并自动打开浏览器** <http://127.0.0.1:8765> |
+| `loca chat --session (resume)` | 用已有 id 接着上次聊（改 `args` 里的 id 即可；`loca sessions` 先看有哪些） |
+| `loca sessions (list)` | 列出已存会话（id、最后更新时间、消息数、标题） |
 | `loca tools / providers` | 打印工具清单与凭据状态 |
 | `pytest (offline)` | 离线测试套件，联网 e2e 被排除（`-m "not live"`） |
 | `pytest (all, hits real API)` | 全部测试，包含真实 DeepSeek 调用 |
@@ -218,6 +226,7 @@ hidden framework. Every line that matters lives in `loca/`.
 ```
 loca/
 ├── cli.py        # `loca chat` / `sessions` / `rollback` / `report` / `serve` / `tools` / `providers`
+├── agents.py     # Named agent definitions: prompt + toolset + limits, and the one build_agent()
 ├── providers/    # Vendor-neutral LLM interface + DeepSeek/OpenAI/Anthropic impls
 ├── tools/        # Tool protocol + read_file/write_file/edit_file/shell + registry
 ├── core/         # Execution loop, events, error recovery, context compaction
@@ -278,7 +287,9 @@ it and what the three failures were is in [`docs/benchmark.md`](docs/benchmark.m
 - **File edits are undoable** — `write_file` and `edit_file` snapshot their
   targets *before* running, and `loca rollback <session> <step>` restores the
   workspace to its state before any step. Files the agent created are deleted,
-  not blanked.
+  not blanked. The REPL takes `/rollback` directly (bare = undo the last edit)
+  and every checkpoint in the Web GUI carries an `↩ undo` button — both replay
+  the same snapshots.
 - **Context compaction** — when the budget runs out the model folds the old
   turns into a summary instead of losing them, pinned into the window; `/compact`
   triggers it by hand. A real tokenizer is used when `tiktoken` is installed,
@@ -308,8 +319,16 @@ it and what the three failures were is in [`docs/benchmark.md`](docs/benchmark.m
   its starting workspace and passes with its reference solution. A task that
   already passes measures nothing; a task whose own reference answer fails
   reports nothing but noise.
-- **397 offline tests** (plus 1 conditionally skipped) and 8 live DeepSeek e2e
-  tests.
+- **The harness and the agent are separate** — the loop does not know the word
+  "coding"; it depends on exactly two abstractions, `LLMProvider` and the tool
+  protocol (`core/` mentions `observability/` in a type hint and nowhere else).
+  The *policy* — prompt, toolset, step cap, token budget — lives in an
+  `AgentSpec` in `loca/agents.py`, and the one this project ships is
+  `CODING_AGENT`. CLI, web GUI and benchmark all assemble through the same
+  `build_agent()`, so no entry point can be missing a capability (checkpoints,
+  context compaction, tracing) the others have. A test enforces it: entry-point
+  modules may not construct a loop themselves.
+- **466 offline tests** (nothing skipped) and 8 live DeepSeek e2e tests.
 
 ## Requirements
 
@@ -325,7 +344,7 @@ code paths nobody runs.
 | Python | 3.13+ |
 
 So the `shell` tool runs cmd.exe — `dir` / `type` / `del` / `findstr`, not
-`ls` / `cat` / `rm` / `grep`. The default system prompt states this, so the
+`ls` / `cat` / `rm` / `grep`. `CODING_AGENT`'s system prompt states this, so the
 model doesn't burn a turn on POSIX commands.
 
 > A Git-Bash-style `--workspace /d/repo` is **rejected outright** with the
@@ -388,7 +407,8 @@ Every command:
 | `loca providers` | Show which providers have credentials |
 
 Sessions default to `~/.loca/sessions.db` (override with `--db` or `$LOCA_DB`).
-Inside the REPL there are also `/help`, `/compact`, `/session` and `/trace`.
+Inside the REPL there are also `/help`, `/compact`, `/rollback`, `/session` and
+`/trace`.
 
 ### 2. Web GUI — `loca serve`
 
@@ -396,6 +416,18 @@ Inside the REPL there are also `/help`, `/compact`, `/session` and `/trace`.
 (`web/index.html`, no build step). Start the server, open
 <http://127.0.0.1:8765>, and chat in the browser. Streaming text, tool calls,
 tool results and errors all render as separate message bubbles.
+
+The top bar takes a **workspace** — the directory this turn's tools run in
+(project root by default). It must already exist: a typo is reported instead of
+silently creating an empty directory, and only Windows paths are accepted
+(`/d/repo` is rejected).
+
+Every turn also belongs to a **session** (the same `~/.loca/sessions.db` the CLI
+uses; the bar shows its id). Files are snapshotted before they are edited, so the
+transcript shows `⛁ checkpoint @ step N` with an `↩ undo` button — the same
+operation as `loca rollback <session> <step>`. A session started in the browser
+can equally be inspected from a terminal with `loca sessions show <id>` and undone
+there.
 
 ## Running it from VS Code
 
@@ -408,6 +440,8 @@ panel (`Ctrl+Shift+D`) and pick a configuration, then press `F5`:
 | `loca chat (sandboxed to playground/)` | Same REPL, sandboxed to an empty `playground/` for throwaway file work |
 | `loca chat --no-tools` | Streaming chat only, to isolate provider-level issues |
 | `loca serve (Web GUI)` | Starts uvicorn **and opens the browser** at <http://127.0.0.1:8765> |
+| `loca chat --session (resume)` | Resumes a stored session by id (edit the id in `args`; `loca sessions` lists what exists) |
+| `loca sessions (list)` | Lists stored sessions (id, last update, message count, title) |
 | `loca tools / providers` | Prints the tool list and credential status |
 | `pytest (offline)` | Unit suite, live e2e deselected (`-m "not live"`) |
 | `pytest (all, hits real API)` | Everything, including the live DeepSeek calls |

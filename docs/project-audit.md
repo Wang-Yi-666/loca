@@ -17,6 +17,11 @@
 但审查也发现 **3 个 P1 缺陷**，它们都不影响已归档的跑分，却会在真实使用中咬人 ——
 而且三个都落在**边界**上（超时、环境变量回退、同一步多次改动），单测恰好都绕开了这些路径。
 
+> **✅ 全部缺陷已于 2026-09-18 修复**：P1 3 项（A1–A3）、P2 12 项（B1–B12，含补充的 B9–B12）、
+> P3 11 项（C1–C11），共 **26 项**，逐条修法与验证证据见 [§9 修复记录](#9-修复记录2026-09-18)。
+> 修复后 `ruff check .` 全绿、离线测试 **426 passed**（原 397 passed + 1 skipped）、
+> `loca bench verify` 36 题全部通过。本报告正文保留修复前的原始结论，便于对照。
+
 > **诚实声明**：以下所有「复现」结论都是我本机实测的结果，不是推断。
 > 复现脚本在 `.workbuddy/scratch/audit_*.py`，可直接重跑。
 
@@ -24,7 +29,7 @@
 
 ## 1. 审查方法与可复现证据
 
-| 验证项 | 命令 | 结果 |
+| 验证项 | 命令 | 结果（审查当时） |
 |---|---|---|
 | 静态检查 | `ruff check .` | `rc=0`，All checks passed |
 | 离线测试 | `pytest -m "not live"` | **398 收集 → 397 passed, 1 skipped** |
@@ -34,6 +39,11 @@
 | 任务集列举 | `loca bench` | rc=0，列出 36 题（默认动作 = list） |
 | CLI 面 | `loca --help` | 8 个文档化子命令全部存在，无缺失 |
 | 跑分复算 | 读 `docs/benchmarks/deepseek-36.json` | pass@1 = 0.9167，33/36，与文档一致 |
+
+> **修复后的同一组命令**（2026-09-18）：`ruff check .` 全绿 ·
+> `pytest -m "not live"` → **426 passed, 0 skipped**（434 收集） ·
+> `pytest -m "live"` → **8 passed** · 合计 **434 项** ·
+> `loca bench verify` → **all 36 task(s) check out**（仍 36/36）。
 
 跑分证据的**逐条复核**（这是本次审查最看重的一项）：
 
@@ -116,18 +126,21 @@ OpenAI 流式不请求 usage 导致 token 恒为 0（B3）。
 
 ## 3. 文档数字核对表
 
-| 文档里的数字 | 实测 | 判定 |
+> 下表「文档里的数字」一列是**修复前**的原文；「实测」一列保留审查当时的复算结果；
+> 最右列给出修复后文档采纳的口径。修复后的权威数字见 §9 末尾的「数字口径」小节。
+
+| 文档里的数字（修复前） | 实测（审查当时） | 判定 |
 |---|---|---|
-| harness **7,840 行 / 31 个模块**（不含评测夹具） | 31 个 `.py` / 7,840 行（排除 `eval/tasks/` 树） | ✅ 精确 |
-| 测试 **6,978 行 / 21 个测试文件 / 406 项** | 6,978 行 / 21 文件 / 397+1+8 = 406 | ✅ 精确 |
-| README **447 行** | 447 行 | ✅ 精确 |
-| **6 篇中文指南 1,650 行** | `docs/*.md` 去掉简历 = 6 篇 / 1,650 行 | ✅ 精确 |
+| harness **7,840 行 / 31 个模块**（不含评测夹具） | 31 个 `.py` / 7,840 行（排除 `eval/tasks/` 树） | ✅ 精确（修复后 **8,380 行**，模块数仍 31） |
+| 测试 **6,978 行 / 21 个测试文件 / 406 项** | 6,978 行 / 21 文件 / 397+1+8 = 406 | ✅ 精确（修复后 **7,520 行 / 434 项**） |
+| README **447 行** | 447 行 | ✅ 精确（补齐 launch.json 表后 **450 行**） |
+| **6 篇中文指南 1,650 行** | `docs/*.md` 去掉简历 = 6 篇 / 1,650 行 | ✅ 精确（修复未改动这 6 篇，仍 1,650 行） |
 | **36 道任务** | 36 个题目目录，14/12/10 | ✅ 精确 |
-| 评测集 **128 个文件 / 5,994 行** | 128 = 124 个夹具 `.py` + **4 个生成脚本**；5,994 = 2,510 + **3,484** | ⚠️ 口径问题，见 C1 |
+| 评测集 **128 个文件 / 5,994 行** | 128 = 124 个夹具 `.py` + **4 个生成脚本**；5,994 = 2,510 + **3,484** | ⚠️ 口径问题，见 C1 —— 已改为 **161 文件 / 3,103 行** |
 | Week 6 新增测试 **82 项**（51 + 31） | `test_eval_tasks` 51、`test_benchmark` 31 | ✅ 精确 |
-| 离线 **397 passed, 1 skipped** | 397 / 1（skip 原因是 `no .bashrc on this system`） | ✅ 精确 |
-| 联网 **8 项** | 8 passed | ✅ 精确 |
-| launch.json「配好一切」 | 文件里有 **9 个**配置，README 表只列了 **7 个** | ⚠️ 见 C2 |
+| 离线 **397 passed, 1 skipped** | 397 / 1（skip 原因是 `no .bashrc on this system`） | ✅ 精确（修复后 **426 passed, 0 skipped** —— 那条跳过项被重写成真断言） |
+| 联网 **8 项** | 8 passed | ✅ 精确（未变） |
+| launch.json「配好一切」 | 文件里有 **9 个**配置，README 表只列了 **7 个** | ⚠️ 见 C2 —— README 已补齐 9 条 |
 
 ---
 
@@ -162,6 +175,12 @@ declared timeout=2s, actual wall clock=8.09s
 「provider 卡在 HTTP 客户端内部」这一种超时不准，**没有提到 shell 这一种**。
 修法：Windows 上用 `CREATE_NEW_PROCESS_GROUP` + `taskkill /F /T /PID`，或 Job Object 整树杀。
 
+> **✅ 已修复**（`tools/shell.py`）：`execute()` 改走新的 `_run_command()` ——
+> `Popen(CREATE_NEW_PROCESS_GROUP)` + 两个守护线程分别抽干 stdout/stderr，
+> `wait(timeout)` 超时后 `_kill_process_tree(pid)`（`taskkill /F /T /PID`）再收尾。
+> 复现脚本同一场景：**8.09s → 2.24s**，超时后无孙进程残留（PowerShell 按命令行匹配
+> `time.sleep(30)` 计数为 0）。另补两条测试钉住「硬上限」与「超时输出也截断」。
+
 #### A2. `_shell_executable()` 的回退值是相对路径 —— 在它本该生效的场景下 shell 工具 100% 失效
 
 **位置**：`loca/tools/shell.py:71-82`
@@ -185,6 +204,12 @@ running a command with it gives: FileNotFoundError: [WinError 2] 系统找不到
 **测试为什么没抓住**：`tests/test_shell.py` 只断言这个函数**返回的字符串**是 `"cmd.exe"`，
 从不真的拿它跑一条命令。那条测试的注释写着「对 PowerShell COMSPEC 免疫」，是空头支票。
 修法：回退到 `%SystemRoot%\System32\cmd.exe` 的绝对路径并校验存在。
+
+> **✅ 已修复**（`tools/shell.py`）：新增 `_system32_exe()`，`_shell_executable()` 现在
+> 只返回**已验证存在的绝对路径**，找不到就 `RuntimeError`（而不是交出一个必然失败的相对路径）。
+> 那条空头测试被替换成两条：`test_shell_executable_is_always_an_absolute_cmd`（真的检查
+> 返回值是绝对路径且可执行）+ `test_hostile_comspec_still_runs_commands`（把 `%COMSPEC%`
+> 指向 PowerShell 后**真的跑一条命令**并断言输出）。
 
 #### A3. 回滚遇到「同一步内多次改动同一文件」会还原成中间版本
 
@@ -220,7 +245,16 @@ Python 的排序是稳定的，同一步内的元素保持 SQL `ORDER BY step, i
 **修法**：排序键改成 `(step, id)` 的复合逆序，即 `rows.sort(key=lambda r: (r.step, r.id), reverse=True)`
 ——但 `CheckpointRow` 目前没有 `id` 字段，需要在 `list_checkpoints` 里把 `id` 带出来。
 
+> **✅ 已修复**：`CheckpointRow` 增加 `id` 字段（`list_checkpoints` 从 `SELECT` 里带出），
+> 排序键改成 `(step, id)` 复合逆序，并把这个「为什么」写进 `rollback()` 的 docstring。
+> 同一步三次写 v1→v2→v3 后 `rollback(sid, 1)` 现在得到**文件被删除**（正确语义）。
+> 另外两处顺手收口：`RollbackReport.skipped` 由 `list[str]` 改成 `skips: list[tuple[str, str]]`
+> （路径与原因分开存，不再靠 `split(" (", 1)` 猜），`capture()` / `_snapshot()` 各自加了
+> 兜底，让检查点机制真的做到「纯观察，绝不搞死这一轮」。新增 5 条测试。
+
 ### 4.2 P2（8 项）
+
+> **2026-09-18 更新**：下表 8 项 + 补充的 4 条（B9–B12）**全部已修复**，逐条说明见 §9。
 
 | # | 位置 | 问题 | 证据 |
 |---|---|---|---|
@@ -250,6 +284,9 @@ Python 的排序是稳定的，同一步内的元素保持 SQL `ORDER BY step, i
   会被记成 `timeout`，且 `steps=0 / tokens=0`（成本被低估），判分器不再运行。
 
 ### 4.3 P3（11 项）
+
+> **2026-09-18 更新**：C1–C11 **全部处理完毕**（其中 C9 的 `Usage.reasoning_tokens`
+> 经复核判定**不是死代码**，保留并说明，见 §9）。
 
 | # | 位置 | 问题 |
 |---|---|---|
@@ -360,4 +397,101 @@ Python 的排序是稳定的，同一步内的元素保持 SQL `ORDER BY step, i
 
 ---
 
+## 9. 修复记录（2026-09-18）
+
+**范围**：本报告的全部 26 项缺陷（P1 3 + P2 12 + P3 11），一次性修完。
+**唯一例外**：B8（归档报告不记录模型名）**只改代码路径、不重跑基准** ——
+重跑一轮 36 题要花真钱，而 `model` 字段的修法与跑分数据本身无关；
+`docs/benchmarks/deepseek-36.json` 里那个 `"model": null` **仍然是 null**，
+这一点在 9.5 单独说明。
+
+### 9.1 P1（3 项）
+
+| # | 改动文件 | 修法 | 验证 |
+|---|---|---|---|
+| A1 | `loca/tools/shell.py` | `execute()` 改走新的 `_run_command()`：`Popen(CREATE_NEW_PROCESS_GROUP)` + 两个守护线程分别抽干 stdout/stderr，`wait(timeout)` 超时后 `_kill_process_tree(pid)`（`taskkill /F /T /PID`）再收尾 | 复现脚本同一场景 **8.09s → 2.24s**；事后用 PowerShell `Get-CimInstance Win32_Process` 按命令行匹配 `time.sleep(30)`，残留 **0** |
+| A2 | `loca/tools/shell.py` | 新增 `_system32_exe()`；`_shell_executable()` 只返回**已验证存在的绝对路径**（`%COMSPEC%` → `%SystemRoot%\System32\cmd.exe`），两者都不可用则 `RuntimeError` | 把 `%COMSPEC%` 指向 PowerShell 后**真的运行一条命令**并断言输出；另断言返回值是绝对路径且 `is_file()` |
+| A3 | `storage.py` + `checkpoint.py` | `CheckpointRow` 补 `id` 字段并带出；`rollback()` 排序键改成 `(step, id)` 复合逆序，理由写进 docstring | 同一步 v1→v2→v3 后 `rollback(sid, 1)` → 文件**被删除**（原为留下 `v2`） |
+
+顺带修掉 A3 报告层的同源问题：`RollbackReport.skipped` 由 `list[str]` 改成
+`skips: list[tuple[str, str]]`（路径 / 原因分开存），`settled()` 不再靠
+`split(" (", 1)` 猜；`capture()` 与 `_snapshot()` 各自补了兜底（C5 / B2）。
+
+### 9.2 P2（12 项）
+
+| # | 改动文件 | 修法 | 验证 |
+|---|---|---|---|
+| B1 | `tools/filesystem.py` | `read_file` 加 `_MAX_LINES = 2000` + `_MAX_BYTES = 100_000`，截断提示给出 `start_line=N` 续读办法 | 两条新测试：行数上限、以及「每行都合法但总量超限」 |
+| B2 | `observability/checkpoint.py` | `_snapshot()` 的 `read_bytes()` 包进 try（TOCTOU → `UNAVAILABLE`）；`capture()` 落库失败不再抛 | 两条新测试：文件在 `stat` 与 `read` 之间消失、store 拒写 |
+| B3 | `providers/openai_compat.py` | 流式 payload 补 `stream_options={"include_usage": True}`，并加 `LOCA_*_STREAM_USAGE` 开关（默认开） | 三条新测试：流式请求带该字段 / 关掉后不带 / 非流式永不带 |
+| B4 | `providers/openai_compat.py` | `parse_stream_chunk` 只在 `finish_reason` 为真时映射，否则保持 `None` | 新测试断言首帧 `None`、usage 帧能到消费者 |
+| B5 | `tools/shell.py` | 超时路径也走 `_truncate`；stdout / stderr **分开**渲染（不再拼接） | 新测试：超时且刷屏时输出被截断 |
+| B6 | `tools/filesystem.py` | `edit_file` 按原文件探测换行符并用 `newline=...` 写回；查找时两边都归一到 LF | 三条新测试：保留 LF / 保留 CRLF / 用 LF 串匹配 CRLF 文件 |
+| B7 | `eval/benchmark.py` | `TaskIntegrity.ok` 现在要求 `passes_with_solution is True`（不再接受 `None`） | 重写原测试为「缺 `solution/` 必须判不合格」 |
+| B8 | `providers/base.py` + `core/recovery.py` + `eval/benchmark.py` | 新增 `resolved_model` 属性（重试包装类透传）；`run_benchmark` 在 `model is None` 时探测并记录，探测失败只 `_log.warning` | 三条新测试：记录默认模型 / 显式 `--model` 优先 / 探测失败不中断 |
+| B9 | `eval/benchmark.py` | 计数拆成 `retries` + `continuations`，并写入 `to_dict()` | 新测试断言两个计数都落盘 |
+| B10 | `core/loop.py` + `core/recovery.py` + `trace.py` + `reporter.py` + `cli.py` + `web/` | ① `RetryingProvider` 的 `on_retry` 钩子接进循环，发 `RECOVERY reason="provider_retry"`；② trace / reporter 把「续写」与「重试」分开累计（`continuations` / `retries`）；③ `_derive_finish` 优先级：error > recovered > continued > tool_use > stop | 两条新测试：重试被吸收时事件流里可见 / 重试耗尽时先报事件再报 ERROR |
+| B11 | `loca/cli.py` | `sessions rm` **先数后删**（原来先删再数，恒为 0）；并显式删除 JSONL 镜像（`_remove_trace_mirror()`） | 两条新测试：报告的数量真是删掉的数量 / 镜像文件也没了 |
+| B12 | `eval/benchmark.py` | deadline 检查从 `DONE` 分支**之前**挪到**之后** | 新测试「刚过 deadline 但已跑完的尝试必须判分而不是记 timeout」；**并把修法临时改回去确认该测试会失败**，再改回 |
+
+### 9.3 P3（11 项）
+
+| # | 改动 | 说明 |
+|---|---|---|
+| C1 | 文档 | 评测集口径统一为 **36 题 / 161 个夹具文件 / 3,103 行**（另有 4 个一次性生成脚本 3,484 行）。复核后确认 README 与简历里其实已经没有那个旧数字，剩下的是本报告的问题描述（保留） |
+| C2 | `README.md`（中英） | launch.json 配置表补齐 `loca chat --session (resume)` / `loca sessions (list)`，9 条与文件一致 |
+| C3 | `pyproject.toml` | `requires-python` 由 `>=3.11` 改成 `>=3.13`，并写明理由（没人测过的下限就是没人守的承诺） |
+| C4 | `core/loop.py` · `core/events.py` · `trace.py` · `web/` | 循环把 `delta_reasoning` 发成 `TEXT_DELTA` 的独立通道；trace 累积进 `StepTrace.reasoning` 且不污染 `text`；Web GUI 渲染成「thinking」 |
+| C5 | `checkpoint.py` · `cli.py` | 见 9.1 末尾（`skips` 二元组） |
+| C6 | `eval/benchmark.py` | `run_benchmark` docstring 改口：sandbox 在 `finally` 里总是被删，「保留供排查」的说法不成立 |
+| C7 | `tools/filesystem.py` | 沙箱声明收窄为「文件工具的路径沙箱」，并明说 shell 不在此列；删掉硬编码的 `C:\Users\nono\...` |
+| C8 | `loca_roadmap.md` | Week 1 第 5 条的 `NotImplementedError` stub 加「已过时」批注（历史保留，不代表当前代码） |
+| C9 | `storage.py` · `checkpoint.py` · `trace.py` · `tools/registry.py` · `providers/types.py` | 删除无调用点的 `SessionStore.delete_checkpoints`、`CheckpointManager.list_checkpoints`、`trace.iter_steps`（连 `__all__`）、`tools/registry.get()`、`ChatRequest.stream`（连 2 处生产写入 + 4 处测试写入）。**`Usage.reasoning_tokens` 经复核判定不是死代码**：它在 `openai_compat.py` 被真实赋值，只是还没上浮到报告层，删掉等于丢弃 provider 已给出的数据 —— 保留并记录在此 |
+| C10 | `observability/trace.py` | `_persist` 的两个 sink 各自 `_log.warning`，告警点明「哪一路丢了哪一步」；不再静默 `pass` |
+| C11 | `scripts/` → `.workbuddy/scratch/` | 自述 one-off 的 `debug_e2e.py` 移出仓库（gitignored + ruff 跳过），`scripts/` 只剩 README 里写过的 `interactive_chat.py` |
+
+### 9.4 回归验证
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 静态检查 | `ruff check .` | 全绿 |
+| 离线测试 | `pytest -m "not live"` | **426 passed, 0 skipped**（修复前 397 passed + 1 skipped） |
+| 联网测试 | `pytest -m "live"` | **8 passed**（真实 DeepSeek 调用；改完后重跑过一次，全过） |
+| 任务集自检 | `loca bench verify` | **all 36 task(s) check out** |
+| 兼容性 | 新旧会话库 / 旧 JSONL | `CheckpointRow.id` 是 SELECT 新增列，`StepTrace` 新字段走 `to_dict` / `from_dict` 默认值，**旧数据照读** |
+
+修复过程新增 **28 项**测试，逐条对应上表的验证列。原来那唯一一条条件跳过
+（`no .bashrc on this system`）被重写成「在 `tmp_path` 之外造一个真实存在的文件」
+—— 跳过项归零，而不是把断言删掉。
+
+### 9.5 没做的事（明确声明）
+
+1. **没有重跑基准**（B8 只改代码路径）。所以：
+   - `docs/benchmarks/deepseek-36.json` 里 `"model": null` **仍然是 null**；
+   - 简历上的 `pass@1 = 91.7%` 继续有效（三个 P1 都不在那一轮的路径上：
+     36 题全在 67 秒墙钟内跑完、没触发 shell 超时、没走 `rollback`），
+     但**这份证据文件仍然无法自证模型名**。要彻底闭环，需要重跑一轮并重新归档。
+2. **没有用真实 API 跑基准**（但联网 e2e 那 8 项重跑过、全过）。
+   基准的 36 题要花真钱，且 B8 的修法与跑分数据无关；
+   改动涉及的 `openai_compat.py` 流式 payload 与 `loop.py` 事件发射，
+   已由重跑的 8 项 live e2e + 19 项离线 parity 覆盖。
+3. **`git` 未提交**。本次只改工作区。
+
+### 9.6 数字口径（修复后，可复算）
+
+| 项 | 数字 | 口径 |
+|---|---|---|
+| harness 源码 | **8,380 行 / 31 个模块** | `loca/**/*.py` 排除 `loca/eval/tasks/` |
+| 测试 | **7,520 行 / 21 个文件 / 434 项** | `tests/**/*.py`；离线 426 + 联网 8 |
+| README | **450 行** | 中英双语同一文件 |
+| 6 篇中文指南 | **1,650 行** | `docs/*.md` 去掉简历 / 面试手册 / 本报告 |
+| 评测集夹具 | **161 个文件 / 3,103 行** | `loca/eval/tasks/`，不含 `_generate/` 下 4 个脚本（3,484 行） |
+
+复算脚本（`.workbuddy/scratch/`，gitignored）：`recount_all.py`（上面这张表）·
+`count_tests.py`（三种分流的用例数）· `audit_c1_numbers.py`（评测集文件 / 行数分组）·
+`run_full.py` / `run_files.py`（ruff + pytest + JUnit 汇总）。
+
+---
+
 *本报告由审查脚本生成的证据支撑，所有「复现」结论均在本机实测。*
+*§9 的修复记录同样逐条实测，复算脚本在 `.workbuddy/scratch/`。*
