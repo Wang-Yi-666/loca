@@ -183,7 +183,6 @@ class AgentLoop:
         tool_schemas = [t.to_openai_tool() for t in self.tools] if self.tools else []
 
         total_tokens = 0
-        last_finish: FinishReason | None = None
         for step in range(self.max_steps):
             # Session-global step counter, advanced by the loop (not the caller
             # and not the tool) so checkpoints and traces share one monotonic
@@ -273,8 +272,6 @@ class AgentLoop:
                     },
                 )
                 return
-            last_finish = finish
-
             if step_usage:
                 yield AgentEvent(type=EventType.USAGE, data=step_usage)
 
@@ -355,8 +352,6 @@ class AgentLoop:
                 "total_tokens": total_tokens,
             },
         )
-        if last_finish is not None:
-            _ = last_finish  # silence linters
 
     # ---- context & checkpoints --------------------------------------------
 
@@ -490,7 +485,6 @@ class AgentLoop:
                 ),
                 is_error=True,
             )
-        start = time.monotonic()
         try:
             result = tool.execute(call.arguments, ctx)
         except Exception as exc:  # pragma: no cover - defensive
@@ -498,8 +492,4 @@ class AgentLoop:
                 content=f"Tool {call.name!r} crashed: {type(exc).__name__}: {exc}",
                 is_error=True,
             )
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        # We attach timing to the event via a side channel; the loop already
-        # emitted TOOL_RESULT with content so we just return.
-        _ = elapsed_ms
         return result

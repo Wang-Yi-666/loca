@@ -434,7 +434,6 @@ def _handle_repl_command(
         return True
 
     console.print(f"[dim]unknown command {command!r} — try /help[/dim]")
-    _ = rest
     return True
 
 
