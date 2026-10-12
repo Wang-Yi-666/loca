@@ -48,13 +48,15 @@ tests/            # 离线单测 + 真实 DeepSeek e2e（无 key 自动跳过）
 [`loca_roadmap.md`](loca_roadmap.md)。
 
 - [x] Week 1 —— Provider 抽象层 + DeepSeek 流式
-- [x] Week 2 —— 工具协议 + 文件系统 / shell（4 个工具）+ Web UI
+- [x] Week 2 —— 工具协议 + 文件系统工具 + shell 工具 + Web UI
 - [x] Week 3 —— 执行循环 + 错误恢复 + 上下文预算
 - [x] Week 4 —— Session 持久化 + Checkpoint + 摘要式上下文压缩
 - [x] Week 5 —— 可观测性（Trace + Report）+ Anthropic/OpenAI 接入
 - [x] Week 6 —— Benchmark（36 个自带任务）+ 真实跑分报告 + 技术博客
 
 ## 跑分（真实数据）
+
+> ⚠️ **这是 2026-09 的旧口径**：那一轮跑在 **cmd.exe** 之下。2026-10-12 换成 `bash` + `powershell` 后，模型写的命令语言变了，**这个数字不再可比**。归档保留以示记录，重跑后会更新。
 
 DeepSeek 默认模型、36 个自带任务、每题 1 次、4 并发 —— **pass@1 = 91.7%（33/36）**：
 
@@ -72,7 +74,7 @@ DeepSeek 默认模型、36 个自带任务、每题 1 次、4 并发 —— **pa
 ## 现在能跑什么
 
 - **端到端的流式工具调用。** DeepSeek 流式吐出一个工具调用，循环用 JSON Schema 校验参数、执行、把结果塞回上下文，直到模型不再要工具。
-- **四个工具** —— `read_file`、`write_file`、`edit_file`、`shell` —— 带路径沙箱、输出截断、超时控制，以及 `LOCA_*` 环境变量隔离。
+- **五个工具** —— `read_file`、`write_file`、`edit_file`，外加两个 shell：`bash`（Git Bash，主力）与 `powershell`。文件工具带路径沙箱；两个 shell 带输出截断、超时与进程树清理；全部隔离 `LOCA_*` 环境变量。
 - **错误恢复** —— 瞬时故障（限流 / 超时 / 5xx）走指数退避重试，且**只在第一个流式分片到达前重试**，用户已经看到的内容不会被重放；回复被输出长度截断时自动追加「继续」；上下文即将溢出前裁剪旧消息。
 - **会话可以断点续聊** —— 每轮结束写进 SQLite（默认 `~/.loca/sessions.db`）。`loca chat --session <id>` 在新进程里接着上次聊；`loca sessions` 列出、查看、删除。
 - **文件改动可回滚** —— `write_file` / `edit_file` 执行前先存快照，`loca rollback <session> <step>` 把工作区还原到任意一步之前；新建的文件会被删掉而不是清空。REPL 内可直接 `/rollback`（不带参数 = 撤销刚才那一下），Web GUI 里每个检查点都带一个 `↩ undo` 按钮，两条路走的是同一份快照。
@@ -83,7 +85,7 @@ DeepSeek 默认模型、36 个自带任务、每题 1 次、4 并发 —— **pa
 - **自带评测集，能证明自己行不行** —— `loca bench run` 把 36 个任务（14 简单 / 12 中等 / 10 困难）并发跑一遍，每个任务跑的是**真实的执行循环和真实的工具**，评分也是**行为式**的（跑 pytest / 比 stdout / 调校验脚本），不看代码 diff。评分文件放在 `hidden/`：agent 看不到，判分前才盖回沙箱 —— 模型改自己的测试文件是没用的。输出 pass@1、pass@k、按难度的分解、失败归因和 token / 步数成本，支持 `--json`、`--compare` 多 provider 对比。
 - **任务集自身也有测试** —— `loca bench verify` 逐题确认「起始工作区必须判不过、参考答案必须判得过」。一道题若初始就通过，它什么都没在测；一道题若参考答案都过不了，它报的每个失败都是噪音。
 - **harness 和 agent 是分开的** —— 执行循环不认识「coding」这个词，它只依赖 `LLMProvider` 和工具协议两个抽象（`core/` 连 `observability/` 都只在类型注解里出现）。提示词、工具集、步数上限、token 预算这些**策略**集中在 `loca/agents.py` 的 `AgentSpec` 里，项目自带的是 `CODING_AGENT`；CLI、Web GUI、Benchmark 三个入口都调同一个 `build_agent()` 装配，所以任何一个入口都不会漏挂一样能力（检查点、上下文压缩、轨迹）。有一条测试专门钉住这件事：入口模块不许自己 `new` 循环。
-- **466 项离线测试**（无跳过项）+ 8 项真实 DeepSeek e2e 测试。
+- **445 项离线测试**（无跳过项）+ 8 项真实 DeepSeek e2e 测试。
 
 ## 运行环境
 
@@ -93,27 +95,35 @@ DeepSeek 默认模型、36 个自带任务、每题 1 次、4 并发 —— **pa
 | 项目 | 约定 |
 |---|---|
 | 平台 | Windows 10 / 11 |
-| Shell | **cmd.exe**（不是 PowerShell，也不是 Git Bash） |
+| Shell | **bash**（Git Bash，主）+ **powershell**（并存） |
 | 路径 | Windows 路径，如 `D:\Projects\repo` |
 | Python | 3.13+ |
 
-所以 `shell` 工具跑的是 cmd.exe —— 用 `dir` / `type` / `del` / `findstr`，
-而不是 `ls` / `cat` / `rm` / `grep`。`CODING_AGENT` 的系统提示词里已写明这一点，
-模型不会拿 POSIX 命令去撞南墙。
+agent 拿到的是**两个 shell 工具，而不是一个**：
 
-> `--workspace /d/repo` 这种 Git-Bash 写法会被**直接拒绝**并提示正确路径。因为
-> `ntpath` 会把它当成**盘符相对路径**，悄悄解析成 `D:\d\repo` —— 一个空目录。
+| 工具 | 是什么 | 什么时候用 |
+|---|---|---|
+| `bash` | Git Bash（MSYS 的 POSIX shell） | **默认**。跑测试、git、构建工具、看目录 —— 语言模型在 bash 上最可靠 |
+| `powershell` | PowerShell 7，没装就用系统自带的 5.1 | 只做 Windows 专有的事：服务、ACL、注册表、cmdlet |
+
+两个工具的**解释器都解析成绝对路径**，不依赖 `%COMSPEC%`，也**不再使用 `shell=True`**。`CODING_AGENT` 的系统提示词写明了各自该用什么语法，模型不会拿 POSIX 命令去撞 PowerShell。
+
+> `--workspace /d/repo` 会被**直接拒绝**并提示正确路径。因为工作区是交给 Python 的
+> `ntpath` 解析的，它把这个写法当成**盘符相对路径**，悄悄解析成 `D:\d\repo` —— 一个空目录。
 > 它是「不报错但结果全错」，排查起来最费劲，所以宁可挡在门口。
+>
+> 注意区分：被拒绝的是 **`--workspace` 这个参数**。在 `bash` 工具**内部**，`/d/repo`
+> 是合法的 MSYS 写法，可以正常用。
 
 ## 快速开始
 
-在 cmd.exe 里：
+在 PowerShell（换成任何一个 shell 都行）里：
 
-```cmd
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
-copy .env.example .env
+Copy-Item .env.example .env
 pytest -v
 ```
 
@@ -142,7 +152,7 @@ assistant status 那一节说的是 ...
 
 | 命令 | 作用 |
 |---|---|
-| `loca chat` | 带四个工具的 agent REPL（默认落库） |
+| `loca chat` | 带内置工具的 agent REPL（默认落库） |
 | `loca chat --no-tools` | 纯流式对话（不暴露工具） |
 | `loca chat --workspace <dir>` | 把工具的沙箱切到别的目录 |
 | `loca chat --session <id>` | 恢复某次会话，不存在则以该名字新建 |
@@ -246,13 +256,18 @@ agent-engineering internship. The living checklist is
 [`loca_roadmap.md`](loca_roadmap.md).
 
 - [x] Week 1 — Provider abstraction + DeepSeek streaming
-- [x] Week 2 — Tool protocol + filesystem / shell (4 tools) + web UI
+- [x] Week 2 — Tool protocol + filesystem tools + shell tools + web UI
 - [x] Week 3 — Execution loop + error recovery + context budgeting
 - [x] Week 4 — Session persistence + checkpoints + summarising compaction
 - [x] Week 5 — Observability (traces + reports) + Anthropic/OpenAI wiring
 - [x] Week 6 — Benchmark (36 shipped tasks) + a real run report + a technical write-up
 
 ## Benchmark (real numbers)
+
+> ⚠️ **Old measurement (2026-09)**: this run used **cmd.exe** as the shell. On
+> 2026-10-12 the agent moved to `bash` + `powershell`, so the commands it writes
+> are different and **the number is no longer comparable**. It is kept as a
+> record of that run; a re-run will replace it.
 
 DeepSeek's default model, 36 shipped tasks, 1 attempt each, 4 workers —
 **pass@1 = 91.7% (33/36)**:
@@ -328,7 +343,7 @@ it and what the three failures were is in [`docs/benchmark.md`](docs/benchmark.m
   `build_agent()`, so no entry point can be missing a capability (checkpoints,
   context compaction, tracing) the others have. A test enforces it: entry-point
   modules may not construct a loop themselves.
-- **466 offline tests** (nothing skipped) and 8 live DeepSeek e2e tests.
+- **445 offline tests** (nothing skipped) and 8 live DeepSeek e2e tests.
 
 ## Requirements
 
@@ -339,28 +354,33 @@ code paths nobody runs.
 | | |
 |---|---|
 | Platform | Windows 10 / 11 |
-| Shell | **cmd.exe** (not PowerShell, not Git Bash) |
+| Shell | **bash** (Git Bash, primary) + **powershell** |
 | Paths | Windows paths, e.g. `D:\Projects\repo` |
 | Python | 3.13+ |
 
-So the `shell` tool runs cmd.exe — `dir` / `type` / `del` / `findstr`, not
-`ls` / `cat` / `rm` / `grep`. `CODING_AGENT`'s system prompt states this, so the
-model doesn't burn a turn on POSIX commands.
+The agent gets **two shell tools, not one**: `bash` (Git Bash) for almost
+everything — tests, git, build tools, looking around — and `powershell` for
+Windows-native work (services, ACLs, the registry, cmdlets). Both resolve their
+interpreter to an absolute path, neither trusts `%COMSPEC%`, and neither uses
+`shell=True`. `CODING_AGENT`'s system prompt says which language belongs in which,
+so the model does not burn a turn writing POSIX into PowerShell.
 
-> A Git-Bash-style `--workspace /d/repo` is **rejected outright** with the
-> correct spelling. `ntpath` reads such a path as *drive-relative* and
-> silently resolves it to `D:\d\repo` — an empty directory. It "succeeds"
-> while pointing somewhere wrong, which is the most expensive kind of bug.
+> `--workspace /d/repo` is **rejected outright** with the correct spelling.
+> The workspace is resolved by Python's `ntpath`, which reads such a path as
+> *drive-relative* and silently resolves it to `D:\d\repo` — an empty
+> directory. It "succeeds" while pointing somewhere wrong, the most expensive
+> kind of bug. Inside a `bash` **command** `/d/repo` is fine — that is MSYS
+> spelling, and only the `--workspace` argument is restricted.
 
 ## Quick start
 
-From cmd.exe:
+From PowerShell (any shell works):
 
-```cmd
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
-copy .env.example .env
+Copy-Item .env.example .env
 pytest -v
 ```
 
@@ -392,7 +412,7 @@ Every command:
 
 | Command | What it does |
 |---|---|
-| `loca chat` | Agent REPL with the four tools (persisted by default) |
+| `loca chat` | Agent REPL with the built-in tools (persisted by default) |
 | `loca chat --no-tools` | Plain streaming chat (no tool use) |
 | `loca chat --workspace <dir>` | Sandbox the tools to a different directory |
 | `loca chat --session <id>` | Resume that session, or start one with that id |

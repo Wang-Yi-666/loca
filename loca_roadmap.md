@@ -13,15 +13,18 @@
 | 项目 | 约定 |
 |---|---|
 | 平台 | Windows 10 / 11 |
-| Shell | **cmd.exe**（不是 PowerShell，也不是 Git Bash） |
-| 路径 | Windows 路径（`D:\repo`）；不接受 `/d/repo` 这类 Git-Bash 写法 |
+| Shell | **两个**：`bash`（Git Bash，主力）+ `powershell`（7，缺则用自带的 5.1） |
+| 路径 | **工作区参数**是 Windows 路径（`D:\repo`）；bash 命令内部可用 `/d/repo` 这类 MSYS 写法 |
 | Python | 3.13+ |
 
-落到代码上的三处约束：
+> ⚠️ 表中 Shell 这一行在 **2026-10-12** 改过。原先只支持 cmd.exe（理由是「零依赖、一定存在」）；换成双 shell 的原因与代价见下方变更日志。
 
-1. `ShellTool` 固定把命令交给 cmd.exe —— `shell=True` + `executable=_shell_executable()`（仅当 `%COMSPEC%` basename 是 `cmd` 且该文件确实存在才用，否则回退 `%SystemRoot%\System32\cmd.exe` 的**绝对路径**；两者都找不到就直接报错，绝不交出一个相对路径），不支持 POSIX 分支。工具描述与系统提示词都写明"用 `dir`/`type`/`del`，不是 `ls`/`cat`/`rm`"。
-2. 命令行渲染改用 cmd 的引号风格（整行双引号、内部引号翻倍），不再用 `shlex.quote` 的 POSIX 单引号。
-3. `--workspace` 直接拒绝 `/d/repo` 形态：`ntpath` 会把它当盘符相对路径，静默解析成 `D:\d\repo`（空目录）—— 「不报错但结果全错」，必须挡在门口。
+落到代码上的四处约束：
+
+1. `loca/tools/shell.py` 是**解释器无关的共享基类**（超时、杀进程树、抽管道、截断、解码）；`bash.py` / `powershell.py` 各自只回答三个问题：怎么找解释器、怎么拼 argv、命令怎么写进转录头。
+2. 两个 shell 都**用显式 argv 启动，不再使用 `shell=True`**，解释器解析成**绝对路径**（`CreateProcess` 的 `lpApplicationName` 不搜 `PATH`）。分别支持 `$LOCA_BASH_PATH` / `$LOCA_PWSH_PATH` 覆写。
+3. PowerShell 的每条命令都追加 `; if ($LASTEXITCODE -ne $null) { exit $LASTEXITCODE }` —— 否则子程序的非零退出码会丢，**失败的测试会被当成通过**。
+4. `--workspace` 直接拒绝 `/d/repo` 形态：`ntpath` 会把它当盘符相对路径，静默解析成 `D:\d\repo`（空目录）—— 「不报错但结果全错」，必须挡在门口。**这只约束工作区参数**；bash 命令内部 `/d/repo` 是合法的。
 
 ---
 
@@ -75,7 +78,7 @@
 - [x] **`read_file`**（`loca/tools/filesystem.py`）— 读文件，支持行号切片、行截断、UTF-8 校验
 - [x] **`write_file`** — 写文件（overwrite/append 两种模式、自动创建父目录、1MB 上限）
 - [x] **`edit_file`** — 字符串替换编辑（unique match 校验、global_replace 模式、返回 unified diff）
-- [x] **`shell`**（`loca/tools/shell.py`，原名 `bash.py`）— 执行 cmd.exe 命令，30s 超时（可调，上限 600s）、stdout/stderr 分离、行长/行数/字节三重截断、`cwd` 沙箱校验、隔离 `LOCA_*` 环境变量
+- [x] **两个 shell 工具**（`loca/tools/bash.py` + `powershell.py`，共享 `shell.py` 的基类）— 执行 Git Bash / PowerShell 命令，30s 超时（可调，上限 600s）、stdout/stderr 分离、行长/行数/字节三重截断、`cwd` 校验、隔离 `LOCA_*` 环境变量。**2026-10-12 从单一 cmd.exe 改过来。**
 
 ### 测试
 
@@ -350,7 +353,31 @@
 
 ## 本次会话变更日志
 
-### 2026-10-08 — 两份求职文档移出仓库
+### 2026-10-12 — 换成双 shell：`bash`（主力）+ `powershell`
+
+用户指令：「我现在不纠结 cmd 这个东西了，就按照现代 agent 范式来改 bash 和 powershell」。
+
+**调研**：主流 agent 在 Windows 上用什么 —— Claude Code 是 **Git Bash 优先**，未装 Git for Windows 才回落 PowerShell，另有一个独立的 PowerShell 工具；pi 的工具名就叫 `bash`，Windows 上要求 Git Bash（可配 `shellPath`）；DeepSeek harness 的社区 issue 正在要求「检测到 git-bash 就优先 bash」。**没有一家把 cmd 当作 agent 的执行 shell。**
+
+**根因不是「cmd 老」，是训练分布**：bash 从 1989 年起就是 Unix 世界的默认，PowerShell 2006 年才有、主要用户是系统管理员；而且 Unix shell 输出纯文本流，与模型「读写文本」的推理方式同构，PowerShell 的管道传的是 .NET 对象。
+
+**实测选出来的关键细节**（猜不出来，必须量）：
+
+| 命令 | 原样 | `; exit $LASTEXITCODE` | 最终采用 |
+|---|---|---|---|
+| `exit 7` | 7 | 7 | 7 |
+| `cmd /c exit 3` | **1** ❌ | 3 | **3** |
+| `dir /b`（语法错） | 1 | **0** ❌ 谎报成功 | **1** |
+| `Write-Error 'boom'` | 1 | **0** ❌ 谎报成功 | **1** |
+
+最终采用 `; if ($LASTEXITCODE -ne $null) { exit $LASTEXITCODE }` —— 那个更短的写法**会把所有 PowerShell 报错变成 rc=0**，正是「不报错但结果全错」。bash 不需要这个包装，退出码原生就对。
+
+**改动**：`shell.py` 重写为共享基类并**去掉 `shell=True`**；新增 `bash.py`、`powershell.py`；注册表变 5 个工具；`CODING_AGENT` 的工具表与系统提示词重写；`tests/test_shell.py` 删除（21 项，cmd 专用），另修三处测试引用；README 中英与各文档同步。
+
+**验证**：`ruff` 全绿；离线 **445 passed, 0 failed, 0 skipped**（原 466，减去删除的 21）；冒烟脚本 15 项全过 —— 含两个 shell 的退出码、中文编码、`cwd` 越界拒绝、timeout 杀进程树。
+
+⚠️ **`pass@1 = 91.7%` 从此不可比**：它是在 cmd 下测的，模型现在写的是 POSIX 命令。`docs/benchmarks/` 里的数字标为旧口径，重跑后才能重新引用。
+
 
 用户指令：「无关的md确实要收回，先收回」。
 

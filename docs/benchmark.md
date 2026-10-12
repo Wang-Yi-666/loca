@@ -136,10 +136,10 @@ all 36 task(s) check out
 
 ## 4. 怎么跑
 
-```cmd
-loca bench                     :: 列出任务（默认动作）
-loca bench run                 :: 跑全部 36 题
-loca bench verify              :: 任务集自检
+```powershell
+loca bench                     # 列出任务（默认动作）
+loca bench run                 # 跑全部 36 题
+loca bench verify              # 任务集自检
 ```
 
 常用参数：
@@ -162,7 +162,7 @@ loca bench verify              :: 任务集自检
 
 第一次跑建议先小范围试水：
 
-```cmd
+```powershell
 loca bench run --difficulty simple --limit 3 --workers 2
 ```
 
@@ -255,6 +255,7 @@ provider 必须是**每次调用现造一个**（`provider_factory`），因为 
 | hard | 10 | 8 | 80.0% | 17,901 | 7.1 |
 | **合计** | **36** | **33** | **91.7%** | **11,120** | **5.3** |
 
+- ⚠️ **旧口径**：这一轮跑在 **cmd.exe** 之下；2026-10-12 换成 `bash`/`powershell` 后不再可比，重跑之前别引用。
 - **pass@1 = 91.7%**（33/36），pass@k 同值（每题只跑一次）
 - 整轮 **399,218 tokens**，墙钟 **67 秒**（4 并发；累计 256 秒）
 - 成本随难度单调上升：简单题 8.1k tokens / 4.9 步，难题 17.9k tokens / 7.1 步
@@ -298,9 +299,9 @@ provider 必须是**每次调用现造一个**（`provider_factory`），因为 
   HTTP 客户端内部，实际耗时由那个客户端自己的超时决定，可能超过 `--timeout`。
   这一点写在 `benchmark.py` 的模块文档里，而不是藏起来 ——
   「报告说 300 秒超时、实际挂了 320 秒」正是那种会悄悄让报告失效的细节。
-- **`shell` 不可回滚**：检查点只管 `write_file` / `edit_file`。
+- **两个 shell 都不可回滚**：检查点只管 `write_file` / `edit_file`。
   评测里模型用什么工具是自由的，所以「回滚到某一步」在评测语境下没有意义。
-- **只支持 Windows**：和主项目一致，`shell` 工具跑的是 cmd.exe。
+- **只支持 Windows**：和主项目一致，两个 shell 工具是 `bash`（Git Bash）与 `powershell`；模型写哪种命令由 `CODING_AGENT` 的提示词决定。
 - **`loca bench verify` 是串行的**：36 题要跑 36 次 pytest，几十秒。它不进 `pytest`
   测试套件（那会把单测拖慢十倍），只在需要时手动跑。
 
