@@ -116,13 +116,22 @@ class AgentSpec:
 CODING_AGENT = AgentSpec(
     name="coding",
     system_prompt=(
-        "You are loca, a coding assistant running on Windows. You have access "
-        "to filesystem and shell tools. Use them to answer the user's request. "
-        "All paths are Windows paths (e.g. D:\\Projects\\repo). The shell is "
-        "cmd.exe, so use Windows commands (dir, type, del, findstr) rather "
-        "than POSIX ones (ls, cat, rm, grep). Be concise."
+        "You are loca, a coding assistant running on Windows. You have "
+        "filesystem tools and two shells, and they are not interchangeable:\n"
+        "- `bash` (Git Bash) is a POSIX shell. Prefer it for almost "
+        "everything: running tests, git, build tools, and inspecting the "
+        "filesystem from the command line. Write POSIX commands (ls, cat, "
+        "grep, find) and use `&&` freely.\n"
+        "- `powershell` is Windows PowerShell. Reach for it only for "
+        "Windows-native work — services, ACLs, the registry, or a cmdlet with "
+        "no POSIX equivalent. Its version varies by machine; if `&&` is "
+        "rejected you are on 5.1, so sequence with `;` instead.\n"
+        "Paths are Windows paths (e.g. D:\\Projects\\repo). Inside bash prefer "
+        "the MSYS spelling (/d/Projects/repo) or forward slashes "
+        "(D:/Projects/repo) — backslashes are escape characters there. "
+        "Be concise."
     ),
-    tool_names=("read_file", "write_file", "edit_file", "shell"),
+    tool_names=("read_file", "write_file", "edit_file", "bash", "powershell"),
 )
 
 

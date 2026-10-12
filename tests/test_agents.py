@@ -74,13 +74,20 @@ def _build(tmp_path: Path, **overrides) -> AgentRuntime:
 
 def test_coding_agent_is_a_complete_definition() -> None:
     assert CODING_AGENT.name == "coding"
-    assert CODING_AGENT.tool_names == ("read_file", "write_file", "edit_file", "shell")
+    assert CODING_AGENT.tool_names == (
+        "read_file",
+        "write_file",
+        "edit_file",
+        "bash",
+        "powershell",
+    )
     assert CODING_AGENT.max_steps == 20
     assert CODING_AGENT.token_budget == DEFAULT_TOKEN_BUDGET
     assert CODING_AGENT.track_files is True
-    # The Windows/cmd.exe instructions are policy. They live here now, not in
-    # the harness's fallback prompt.
-    assert "cmd.exe" in CODING_AGENT.system_prompt
+    # Which shells exist, and which one the agent should reach for first, is
+    # policy. It lives here now, not in the harness's fallback prompt.
+    assert "bash" in CODING_AGENT.system_prompt
+    assert "powershell" in CODING_AGENT.system_prompt
 
 
 def test_loop_fallback_prompt_is_neutral() -> None:
@@ -108,8 +115,8 @@ def test_core_does_not_import_observability_at_runtime() -> None:
 
 
 def test_resolved_tools_follows_the_spec_order() -> None:
-    spec = replace(CODING_AGENT, tool_names=("shell", "read_file"))
-    assert [tool.name for tool in spec.resolved_tools()] == ["shell", "read_file"]
+    spec = replace(CODING_AGENT, tool_names=("powershell", "read_file"))
+    assert [tool.name for tool in spec.resolved_tools()] == ["powershell", "read_file"]
 
 
 def test_unknown_tool_name_names_the_typo_and_what_is_registered() -> None:

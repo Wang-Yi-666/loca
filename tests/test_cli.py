@@ -157,10 +157,12 @@ def test_repl_is_multi_turn_via_loop_transcript(tmp_path: Path) -> None:
     assert contents == ["sys", "one", "first", "two"]
 
 
-def test_tools_subcommand_lists_four_tools(capsys: pytest.CaptureFixture[str]) -> None:
+def test_tools_subcommand_lists_every_builtin_tool(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     assert main(["tools"]) == 0
     out = capsys.readouterr().out
-    for name in ("read_file", "write_file", "edit_file", "shell"):
+    for name in ("read_file", "write_file", "edit_file", "bash", "powershell"):
         assert name in out
 
 

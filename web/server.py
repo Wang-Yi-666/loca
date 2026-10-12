@@ -68,7 +68,7 @@ _log = logging.getLogger("loca.web")
 # Load .env so the API key is available without manual setup.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-# Register the four built-in tools once at import time.
+# Register the built-in tools once at import time.
 register_default_tools()
 
 # Fallback workspace used when a request does not name one: the project root.

@@ -1,4 +1,4 @@
-"""Interactive chat with loca — streaming, with the four built-in tools.
+"""Interactive chat with loca — streaming, with the built-in tools.
 
 Thin launcher around ``loca chat`` so there is exactly one REPL
 implementation. Any argument you pass here is forwarded:

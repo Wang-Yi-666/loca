@@ -1,26 +1,51 @@
-"""Shell tool: execute command lines through Windows ``cmd.exe``.
+"""Shared machinery for the command-running tools: ``bash`` and ``powershell``.
 
-loca targets **Windows only**. Commands are handed to ``cmd.exe`` and every
-path the agent sees or produces is a Windows path (``D:\\repo``, not
-``/d/repo``). There is deliberately no POSIX/macOS branch: if a command needs
-``ls``, write ``dir``.
+loca targets **Windows only** and offers two command tools rather than one:
 
-Unlike filesystem tools, the shell is *not* sandboxed to the workspace — the
-model is expected to run ``git``, ``pip``, ``pytest`` and other commands that
-live elsewhere. Safety comes from showing the command, the working directory,
-and a clear exit code so the operator can see what the agent did.
+``bash``
+    Git Bash (MSYS). The default. Coding agents are markedly more reliable in
+    a POSIX shell than in PowerShell — bash dominates their training data, and
+    a Unix shell's text-stream output matches how a model reasons about text.
+``powershell``
+    PowerShell 7 when installed, otherwise the Windows-bundled 5.1. For
+    Windows-native work (services, ACLs, the registry) and cmdlets.
+
+Everything in this module is interpreter-agnostic: the deadline, the
+process-tree kill, the pipe draining, the output caps and the byte decoding.
+A subclass supplies five things — its ``name``, its ``description``, how to
+find its interpreter, how to turn a command line into an argv, and how to
+render that line for the transcript. The split matters because the failure
+modes documented below were each learned once, and should not have to be
+learned again per shell.
 
 Timeouts are a hard bound
 -------------------------
 
-``timeout`` is a wall-clock ceiling, not a suggestion. ``shell=True`` makes the
-direct child ``cmd.exe`` while the real work happens in grandchildren
-(``python``, ``pytest``, ``npm``…) that inherit the stdout pipe. Killing only
-the interpreter leaves those grandchildren alive *and holding the pipe open*,
-so collecting the output keeps blocking until they exit on their own — which is
+``timeout`` is a wall-clock ceiling, not a suggestion. The direct child is the
+interpreter, while the real work happens in grandchildren (``python``,
+``pytest``, ``npm``…) that inherit the stdout pipe. Killing only the
+interpreter leaves those grandchildren alive *and holding the pipe open*, so
+collecting the output keeps blocking until they exit on their own — which is
 how a declared 2-second timeout ends up taking 8 seconds. On expiry the whole
 process tree is therefore killed with ``taskkill /F /T`` before the pipes are
 read. See :func:`_kill_process_tree` for what that does and does not reach.
+
+Interpreter resolution
+----------------------
+
+Neither tool trusts ``%COMSPEC%`` or a bare program name. Each resolves an
+**absolute** path to a file that exists, because ``CreateProcess`` resolves an
+``lpApplicationName`` with no directory against the *current directory* — it
+does **not** search ``PATH``. A bare ``"bash"`` handed to ``Popen`` therefore
+fails with ``WinError 2``. ``shutil.which`` does the searching for us, and the
+well-known install locations are checked first so a bundled or shim copy on
+``PATH`` cannot quietly win.
+
+Unlike the filesystem tools, the shells are *not* sandboxed to the workspace —
+the model is expected to run ``git``, ``pip``, ``pytest`` and other commands
+that live elsewhere. Only the *working directory* is checked. Safety comes
+from showing the command, the working directory and a clear exit code, so the
+operator can see what the agent did.
 """
 
 from __future__ import annotations
@@ -41,6 +66,7 @@ _MAX_OUTPUT_BYTES = 30_000
 _MAX_LINE_LEN = 2_000
 _MAX_LINES = 500
 _DEFAULT_TIMEOUT = 30  # seconds
+_MAX_TIMEOUT = 600
 
 #: How long to wait for a killed process (and its pipe readers) to finish
 #: after the tree kill has closed the write ends. This only covers scheduling.
@@ -53,9 +79,10 @@ _READ_CHUNK = 8192
 def _decode(data: bytes) -> str:
     """Decode child-process output without ever crashing the reader.
 
-    Most CLIs emit UTF-8, but Windows console programs (cmd.exe itself)
-    emit text in the ANSI codepage. Try UTF-8 first, then the locale
-    encoding, and replace undecodable bytes as a last resort.
+    Most CLIs emit UTF-8, and Git Bash does. The Windows-bundled PowerShell
+    5.1 does not: it writes its console in the OEM codepage (cp936 on a
+    Chinese system), so a strict UTF-8 read would raise on any localized
+    message. Try UTF-8 first, then the locale encoding, then replace.
     """
     if not data:
         return ""
@@ -67,18 +94,6 @@ def _decode(data: bytes) -> str:
         return data.decode(locale.getencoding(), errors="replace")
     except (LookupError, UnicodeDecodeError):
         return data.decode("utf-8", errors="replace")
-
-
-def _format_command(command: str) -> str:
-    """Render a command for the transcript header using cmd.exe quoting.
-
-    ``shlex.quote`` produces POSIX single-quoting (``'dir /b'``), which is not
-    how cmd.exe reads a line. cmd.exe has no real escape character, so the
-    convention is to wrap the whole line in double quotes and double any
-    embedded quotes. This is for display only — ``subprocess`` receives the
-    raw string.
-    """
-    return '"' + command.replace('"', '""') + '"'
 
 
 def _system32_exe(name: str) -> str | None:
@@ -96,33 +111,6 @@ def _system32_exe(name: str) -> str | None:
         if candidate.is_file():
             return str(candidate)
     return None
-
-
-def _shell_executable() -> str:
-    """The shell every command runs through: always cmd.exe, never anything else.
-
-    ``shell=True`` resolves the interpreter from ``%COMSPEC%``. We pin it so a
-    COMSPEC someone pointed at PowerShell or Git-Bash cannot silently change the
-    command language the model is told to write.
-
-    The fallback is an **absolute** path deliberately. ``Popen(executable=...)``
-    passes the string to ``CreateProcess`` as ``lpApplicationName``, which —
-    unlike a command line — is not searched on ``PATH``. A bare ``"cmd.exe"``
-    therefore fails with ``WinError 2`` in precisely the situation this
-    function exists to handle, taking the agent's ability to run anything with
-    it. If neither ``%COMSPEC%`` nor ``System32`` yields a real file, we say so
-    instead of returning a string that cannot be executed.
-    """
-    comspec = os.environ.get("COMSPEC")
-    if comspec and Path(comspec).stem.lower() == "cmd" and Path(comspec).is_file():
-        return comspec
-    located = _system32_exe("cmd.exe")
-    if located is not None:
-        return located
-    raise RuntimeError(
-        "cannot locate cmd.exe: %COMSPEC% does not name an existing cmd.exe "
-        r"and %SystemRoot%\System32\cmd.exe is missing"
-    )
 
 
 def _kill_process_tree(pid: int) -> None:
@@ -184,13 +172,17 @@ def _reap(process: subprocess.Popen[bytes]) -> None:
 
 
 def _run_command(
-    command: str,
+    argv: list[str],
     *,
     cwd: Path,
     timeout: int,
     env: dict[str, str],
 ) -> tuple[bytes, bytes, int | None, bool]:
-    """Run ``command``, returning ``(stdout, stderr, exit_code, timed_out)``.
+    """Run ``argv``, returning ``(stdout, stderr, exit_code, timed_out)``.
+
+    ``argv`` is an explicit argument list, never ``shell=True``: the
+    interpreter is named outright, so there is no intermediate ``/c`` to get
+    wrong and no ``%COMSPEC%`` to hijack.
 
     The pipes are drained by two daemon threads while the main thread waits on
     the process handle. That split is the whole point: ``communicate(timeout=)``
@@ -199,9 +191,7 @@ def _run_command(
     until the grandchildren let go of the pipe.
     """
     process = subprocess.Popen(
-        command,
-        shell=True,
-        executable=_shell_executable(),
+        argv,
         cwd=str(cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -233,31 +223,36 @@ def _run_command(
 
 
 class ShellTool(Tool):
-    """Execute a command line through cmd.exe and return stdout / stderr / code."""
+    """Base for the command-running tools. Not registered on its own.
 
+    Subclasses provide the five pieces listed in the module docstring. The
+    three abstract hooks are deliberately explicit rather than inferred from
+    the program's filename: guessing which shell the model is writing for is
+    the exact mistake this design removes.
+    """
+
+    #: Overridden. The base value is never registered.
     name = "shell"
-    description = (
-        "Run a command line through the Windows command interpreter "
-        "(cmd.exe) and return its stdout, stderr and exit code. Use Windows "
-        "commands (dir, type, copy, del, findstr, ...) and Windows paths "
-        "(D:\\Projects\\repo) — this is not a POSIX shell, so ls/cat/rm will "
-        "not work. By default the working directory is the workspace and the "
-        "timeout is 30s; on expiry the whole process tree is killed. Long "
-        "output is truncated. Use this to run tests, install packages, or "
-        "invoke other CLIs."
-    )
+    description = "Run a command line and return its stdout, stderr and exit code."
+
     input_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
             "command": {
                 "type": "string",
-                "description": "The cmd.exe command line to run.",
+                "description": (
+                    "The command line to run. Written in the language of the "
+                    "shell this tool names, not in any other shell's syntax."
+                ),
             },
             "timeout": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 600,
-                "description": "Timeout in seconds. Default 30, max 600.",
+                "maximum": _MAX_TIMEOUT,
+                "description": (
+                    f"Timeout in seconds. Default {_DEFAULT_TIMEOUT}, "
+                    f"max {_MAX_TIMEOUT}."
+                ),
             },
             "cwd": {
                 "type": "string",
@@ -270,6 +265,29 @@ class ShellTool(Tool):
         "required": ["command"],
         "additionalProperties": False,
     }
+
+    # ---- hooks a subclass must supply -------------------------------------
+
+    def _resolve_program(self) -> str:
+        """Absolute path to this tool's interpreter. Raise when unavailable.
+
+        Must return a path to a **file that exists**: the value ends up in
+        ``argv[0]``, and a bare name is not searched on ``PATH``.
+        """
+        raise NotImplementedError
+
+    def _build_argv(self, command: str, program: str) -> list[str]:
+        """Turn the model's command line into the argv to execute."""
+        raise NotImplementedError
+
+    def _format_command(self, command: str) -> str:
+        """Render the command for the transcript header, in this shell's style.
+
+        Display only — ``subprocess`` always receives the raw string.
+        """
+        raise NotImplementedError
+
+    # ---- the shared pipeline ----------------------------------------------
 
     def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         validate_arguments(self.input_schema, arguments)
@@ -290,23 +308,24 @@ class ShellTool(Tool):
             cwd_path = ctx.workspace
             cwd_path.mkdir(parents=True, exist_ok=True)
 
+        try:
+            program = self._resolve_program()
+        except RuntimeError as exc:
+            return ToolResult(content=str(exc), is_error=True)
+
+        argv = self._build_argv(command, program)
+
         # Surface the environment to the model. We at least set HOME so npm,
         # pip etc. can write cache files. (Avoid leaking LOCA_* keys though.)
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if not k.startswith("LOCA_")
-        }
+        env = {k: v for k, v in os.environ.items() if not k.startswith("LOCA_")}
 
         start = time.monotonic()
         try:
-            # Windows-only: shell=True hands the line to cmd.exe; `executable`
-            # pins it so %COMSPEC% can't swap in a different interpreter.
-            # Byte capture: cmd.exe and other console programs emit text in the
-            # ANSI codepage (e.g. cp936), not UTF-8, so text=True would crash
-            # the reader thread on any localized message.
+            # Byte capture rather than text=True: PowerShell 5.1 emits its
+            # console in the OEM codepage, so a strict UTF-8 decode would
+            # crash the reader thread on any localized message.
             raw_out, raw_err, exit_code, timed_out = _run_command(
-                command, cwd=cwd_path, timeout=timeout, env=env
+                argv, cwd=cwd_path, timeout=timeout, env=env
             )
         except Exception as exc:  # pragma: no cover - defensive
             return ToolResult(content=f"Failed to execute: {exc}", is_error=True)
@@ -328,7 +347,7 @@ class ShellTool(Tool):
                     empty_note="(no output before the timeout)",
                 )
                 + f"\n\nCommand timed out after {timeout}s. The process tree "
-                "(cmd.exe and everything it spawned) was killed.",
+                f"({self.name} and everything it spawned) was killed.",
                 is_error=True,
             )
 
@@ -356,8 +375,15 @@ class ShellTool(Tool):
         attrs: str,
         empty_note: str = "(no output)",
     ) -> str:
-        """The transcript block for one command. stdout and stderr stay apart."""
-        parts = [f"<shell command={_format_command(command)} cwd={cwd_path} {attrs}>"]
+        """The transcript block for one command. stdout and stderr stay apart.
+
+        The header carries the tool name, so a transcript (or a trace) shows
+        which interpreter actually ran the line.
+        """
+        parts = [
+            f"<{self.name} command={self._format_command(command)} "
+            f"cwd={cwd_path} {attrs}>"
+        ]
         if stdout:
             parts.append(f"--- stdout ---\n{stdout}")
         if stderr:
