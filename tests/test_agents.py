@@ -95,7 +95,10 @@ def test_loop_fallback_prompt_is_neutral() -> None:
     fallback = AgentLoop.DEFAULT_SYSTEM_PROMPT
     assert fallback != CODING_AGENT.system_prompt
     assert "Windows" not in fallback
-    assert "cmd.exe" not in fallback
+    # No shell is named either: choosing one is policy, and policy belongs
+    # to the agent spec rather than to the harness's fallback.
+    for shell in ("bash", "powershell"):
+        assert shell not in fallback
 
 
 def test_core_does_not_import_observability_at_runtime() -> None:

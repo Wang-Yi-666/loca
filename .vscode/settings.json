@@ -1,11 +1,11 @@
 {
     // Use the project's local virtualenv for everything Python.
-    "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
 
     // Tell VS Code to use pytest (not unittest) for test discovery.
     "python.testing.pytestEnabled": true,
     "python.testing.unittestEnabled": false,
-    "python.testing.pytestPath": "${workspaceFolder}\\.venv\\Scripts\\pytest.exe",
+    "python.testing.pytestPath": "${workspaceFolder}/.venv/Scripts/pytest.exe",
     "python.testing.autoTestDiscoverOnSaveEnabled": true,
 
     // Lint with ruff (installed as a dev dep).

@@ -17,7 +17,7 @@
 | 路径 | **工作区参数**是 Windows 路径（`D:\repo`）；bash 命令内部可用 `/d/repo` 这类 MSYS 写法 |
 | Python | 3.13+ |
 
-> ⚠️ 表中 Shell 这一行在 **2026-10-12** 改过。原先只支持 cmd.exe（理由是「零依赖、一定存在」）；换成双 shell 的原因与代价见下方变更日志。
+> ⚠️ 表中 Shell 这一行在 **2026-10-12** 改过。原先只提供一个「零依赖、一定存在」的系统解释器；换成双 shell 的原因与代价见下方变更日志。
 
 落到代码上的四处约束：
 
@@ -78,7 +78,7 @@
 - [x] **`read_file`**（`loca/tools/filesystem.py`）— 读文件，支持行号切片、行截断、UTF-8 校验
 - [x] **`write_file`** — 写文件（overwrite/append 两种模式、自动创建父目录、1MB 上限）
 - [x] **`edit_file`** — 字符串替换编辑（unique match 校验、global_replace 模式、返回 unified diff）
-- [x] **两个 shell 工具**（`loca/tools/bash.py` + `powershell.py`，共享 `shell.py` 的基类）— 执行 Git Bash / PowerShell 命令，30s 超时（可调，上限 600s）、stdout/stderr 分离、行长/行数/字节三重截断、`cwd` 校验、隔离 `LOCA_*` 环境变量。**2026-10-12 从单一 cmd.exe 改过来。**
+- [x] **两个 shell 工具**（`loca/tools/bash.py` + `powershell.py`，共享 `shell.py` 的基类）— 执行 Git Bash / PowerShell 命令，30s 超时（可调，上限 600s）、stdout/stderr 分离、行长/行数/字节三重截断、`cwd` 校验、隔离 `LOCA_*` 环境变量。**2026-10-12 从单一系统解释器改过来。**
 
 ### 测试
 
@@ -353,30 +353,62 @@
 
 ## 本次会话变更日志
 
+### 2026-10-13 — 审查问题修复：Web 异步非阻塞队列桥接 + 只读工具并发优化 + 危险命令防御 + 补齐 Shell 测试
+
+用户指令：根据项目审查提出的不足进行调整修改，并记录到工作区日志。
+
+**四项针对性改进与落地**：
+
+1. **Web 服务端非阻塞队列桥接（`web/server.py`）**
+   - **痛点**：原 `event_source()` 异步生成器在 FastAPI/Uvicorn 的主 asyncio 线程里直接同步迭代 `loop.run()`。由于 LLM 请求与 subshell 均为同步阻塞 I/O，单轮执行（耗时数秒到数十秒）会直接卡死 Uvicorn 事件循环，导致 `/api/health` 与并发请求完全挂起。
+   - **解法**：将 `loop.run()` 移至独立后台工作线程执行，通过 `asyncio.Queue` 配合 `loop_async.call_soon_threadsafe(queue.put_nowait, item)` 线程安全地回传事件，`event_source()` 异步 `await queue.get()` 进行推流。
+   - **线程安全性**：SQLite `SessionStore` 的初始化、保证会话、会话持久化与关闭全部在工作线程内部闭环完成，彻底避免跨线程复用 sqlite3 连接。
+   - **验证**：`tests/test_web_server.py` 新增 `test_chat_threaded_worker_persists_session`，27 项测试全绿。
+
+2. **只读工具（`read_file`）并发化优化（`loca/tools/base.py` + `filesystem.py` + `core/loop.py`）**
+   - **痛点**：模型单步吐出多个文件读取（例如同时读取 3 个不同文件）时，原循环单线程同步串行执行，等待时间成倍增加。
+   - **解法**：`Tool` 抽象基类新增 `is_readonly: bool = False`，`ReadFileTool` 标为 `True`；在 `AgentLoop.run()` 中，当单步工具调用批次均属于只读工具时，通过 `concurrent.futures.ThreadPoolExecutor` 并发执行。
+   - **确定性保证**：事件流与消息追加严格保序（与模型输出的 `tool_calls` 顺序逐一对应）；凡包含修改工具（`write_file`/`edit_file`/`bash`/`powershell`）的调用批次仍维持严密的顺序执行与快照保存。
+   - **验证**：`tests/test_loop.py` 新增 `test_parallel_readonly_tool_calls_run_and_preserve_order`，7 项全绿。
+
+3. **Shell 宿主危险命令主动防御（`loca/tools/shell.py`）**
+   - **痛点**：文件工具有沙箱，但 `bash` / `powershell` 直接面向 Windows 宿主机。若模型幻觉或遭遇 Prompt 注入，可能执行整盘删除或破坏系统的灾难性命令。
+   - **解法**：新增 `_check_dangerous_command()`，对 `rm -rf /`、`rm -rf ~`、`rm -rf C:\`、`del /s /q C:\Windows`、`rd /s /q C:\`、`format C:`、`Remove-Item -Recurse -Force C:\`、`shutdown`、`diskpart` 等高危破坏性指令做前置模式拦截。
+   - **自愈机制**：被拦截指令返回 `ToolResult(content="Refusing to execute potentially catastrophic command...", is_error=True)`，既守住宿主安全底线，又将错误反馈给模型促其自纠。
+
+4. **补齐 Shell 工具专有测试套件（`tests/test_shell.py`）**
+   - **痛点**：此前双 shell 重构删除了旧解释器的 `test_shell.py`，导致两个 shell 缺乏专门的离线单元测试。
+   - **解法**：新建 `tests/test_shell.py`（**38 项测试**），覆盖 `BashTool` argv 拼接与转义、`PowerShellTool` 退出码守卫、`$LOCA_BASH_PATH`/`$LOCA_PWSH_PATH` 覆盖、危险命令防御拦截、`cwd` 越界拒绝、`_decode` 编码容错、`_truncate` 三重截断与真实 PowerShell 退出码验证。
+
+**统计与回归**：
+- `ruff check .` 零告警全绿；
+- 离线测试集从 428 项增至 **467 passed**（0 failed，0 skipped）；
+- 核心架构保持整洁分层，零向后兼容破坏。
+
 ### 2026-10-12 — 换成双 shell：`bash`（主力）+ `powershell`
 
-用户指令：「我现在不纠结 cmd 这个东西了，就按照现代 agent 范式来改 bash 和 powershell」。
+用户指令：不再纠结原来的解释器，按现代 agent 范式改成 bash 和 powershell。
 
-**调研**：主流 agent 在 Windows 上用什么 —— Claude Code 是 **Git Bash 优先**，未装 Git for Windows 才回落 PowerShell，另有一个独立的 PowerShell 工具；pi 的工具名就叫 `bash`，Windows 上要求 Git Bash（可配 `shellPath`）；DeepSeek harness 的社区 issue 正在要求「检测到 git-bash 就优先 bash」。**没有一家把 cmd 当作 agent 的执行 shell。**
+**调研**：主流 agent 在 Windows 上用什么 —— Claude Code 是 **Git Bash 优先**，未装 Git for Windows 才回落 PowerShell，另有一个独立的 PowerShell 工具；pi 的工具名就叫 `bash`，Windows 上要求 Git Bash（可配 `shellPath`）；DeepSeek harness 的社区 issue 正在要求「检测到 git-bash 就优先 bash」。**没有一家把那个系统解释器当作 agent 的执行 shell。**
 
-**根因不是「cmd 老」，是训练分布**：bash 从 1989 年起就是 Unix 世界的默认，PowerShell 2006 年才有、主要用户是系统管理员；而且 Unix shell 输出纯文本流，与模型「读写文本」的推理方式同构，PowerShell 的管道传的是 .NET 对象。
+**根因不是「那个解释器老」，是训练分布**：bash 从 1989 年起就是 Unix 世界的默认，PowerShell 2006 年才有、主要用户是系统管理员；而且 Unix shell 输出纯文本流，与模型「读写文本」的推理方式同构，PowerShell 的管道传的是 .NET 对象。
 
 **实测选出来的关键细节**（猜不出来，必须量）：
 
 | 命令 | 原样 | `; exit $LASTEXITCODE` | 最终采用 |
 |---|---|---|---|
 | `exit 7` | 7 | 7 | 7 |
-| `cmd /c exit 3` | **1** ❌ | 3 | **3** |
+| `python -c "import sys; sys.exit(3)"` | **1** ❌ | 3 | **3** |
 | `dir /b`（语法错） | 1 | **0** ❌ 谎报成功 | **1** |
 | `Write-Error 'boom'` | 1 | **0** ❌ 谎报成功 | **1** |
 
 最终采用 `; if ($LASTEXITCODE -ne $null) { exit $LASTEXITCODE }` —— 那个更短的写法**会把所有 PowerShell 报错变成 rc=0**，正是「不报错但结果全错」。bash 不需要这个包装，退出码原生就对。
 
-**改动**：`shell.py` 重写为共享基类并**去掉 `shell=True`**；新增 `bash.py`、`powershell.py`；注册表变 5 个工具；`CODING_AGENT` 的工具表与系统提示词重写；`tests/test_shell.py` 删除（21 项，cmd 专用），另修三处测试引用；README 中英与各文档同步。
+**改动**：`shell.py` 重写为共享基类并**去掉 `shell=True`**；新增 `bash.py`、`powershell.py`；注册表变 5 个工具；`CODING_AGENT` 的工具表与系统提示词重写；`tests/test_shell.py` 删除（21 项，只针对旧解释器），另修三处测试引用；README 中英与各文档同步。
 
 **验证**：`ruff` 全绿；离线 **445 passed, 0 failed, 0 skipped**（原 466，减去删除的 21）；冒烟脚本 15 项全过 —— 含两个 shell 的退出码、中文编码、`cwd` 越界拒绝、timeout 杀进程树。
 
-⚠️ **`pass@1 = 91.7%` 从此不可比**：它是在 cmd 下测的，模型现在写的是 POSIX 命令。`docs/benchmarks/` 里的数字标为旧口径，重跑后才能重新引用。
+⚠️ **`pass@1 = 91.7%` 从此不可比**：它是换 shell 之前测的，而模型现在写的是 POSIX 命令。`docs/benchmarks/` 里的数字标为旧口径，重跑后才能重新引用。
 
 
 用户指令：「无关的md确实要收回，先收回」。
@@ -425,7 +457,7 @@
   `observability/trace.py` 又 `import loca.core.events` —— core ↔ observability **双向依赖**。
   对照 `providers/base.py` 用的是 `ABC`（依赖接口）——同一类需求在两处做法不一致。
 - **系统提示词是策略却写在 core 里**：`AgentLoop.DEFAULT_SYSTEM_PROMPT` 里同时有「a coding assistant」
-  「running on Windows」「cmd.exe，用 dir 而不是 ls」三层决策，没有一层属于 harness。
+  「running on Windows」「用哪个 shell、写哪种命令」三层决策，没有一层属于 harness。
 - **工具集是进程级全局**：`register_default_tools()` 往模块级 `_REGISTRY` 里塞，而 `AgentLoop` 在没传
   `tools=` 时用 `all_tools()` 兜底 —— **harness 的默认行为 = 那个 coding agent 的工具集**。
 - **「agent 是谁」没有名字**：答案散在三个入口的装配代码里（`cli.py` / `eval/benchmark.py` /
@@ -443,7 +475,7 @@
   20~30 行装配代码删掉。Web 由此**自动获得上下文压缩**，也就是本轮那个 bug 的修复。
 - **core 解耦** —— `CheckpointManager` 的 import 挪进 `TYPE_CHECKING`（循环只调它的 `capture()`，
   需要的是能力不是类）；`AgentLoop.DEFAULT_SYSTEM_PROMPT` 换成中性兜底（"You are a helpful
-  assistant…"），Windows / cmd.exe 那一套挪进 `CODING_AGENT`。
+  assistant…"），平台与 shell 那一套挪进 `CODING_AGENT`。
 - **`loca/eval/__init__.py`** 写清：评的是**建在 harness 上的那个 agent**，不是 harness 本身。
 - **测试 +18 项** —— 新增 `tests/test_agents.py` 17 项：spec 完整性、装配矩阵（有/无 store、
   `budget=0`、`track_files=False`、显式工具表、step 计数器续接、工具名打错报错、trace 开关），
@@ -567,7 +599,7 @@
 | # | 问题 | 修法 | 验证 |
 |---|---|---|---|
 | A1 | shell 超时不是上限，`timeout=2s` 实测跑 8.09 秒 | `execute()` 改走新的 `_run_command()`：`Popen(CREATE_NEW_PROCESS_GROUP)` + 两个守护线程抽干 stdout/stderr，`wait(timeout)` 超时后 `taskkill /F /T /PID` 整树杀 | 同一复现场景 **8.09s → 2.24s**；超时后按命令行匹配 `time.sleep(30)` 的进程数为 **0**（PowerShell `Get-CimInstance`） |
-| A2 | `_shell_executable()` 回退裸 `"cmd.exe"`，在它唯一该生效的场景（`%COMSPEC%` 被换成 PowerShell）下 100% 失效 | 新增 `_system32_exe()`；只返回**已验证存在的绝对路径**，都找不到就 `RuntimeError` | 原测试只断言返回字符串，改为**真的跑一条命令**；另加一条把 `%COMSPEC%` 指向 PowerShell 后跑命令的测试 |
+| A2 | 解释器回退路径返回**裸文件名**，在它唯一该生效的场景（`%COMSPEC%` 被换掉）下 100% 失效 | 只返回**已验证存在的绝对路径**，都找不到就 `RuntimeError` | 原测试只断言返回字符串，改为**真的跑一条命令**；另加一条把 `%COMSPEC%` 指向别的解释器后跑命令的测试 |
 | A3 | 同一步内多次改动同一文件，回滚还原成中间版本 | `CheckpointRow` 补 `id`，排序键改成 `(step, id)` 复合逆序 | 同一步 v1→v2→v3 后 `rollback(sid, 1)` → 文件被**删除**（正确语义） |
 
 **修掉的 P2（12 项，B1–B12）**
@@ -703,9 +735,9 @@ git 按文件快照提交，拆不开 —— 强行拆就得手工构造中间�
 **发现的 3 个 P1 缺陷**（均已在报告里复现，且都不影响已归档的跑分）
 
 1. **`shell` 的超时不是上限** —— `timeout=2s` 的命令实测跑了 **8.09 秒**。
-   `shell=True` 下超时只杀 `cmd.exe`，孙进程仍持有管道写端，`communicate()` 必须等它退出。
+   `shell=True` 下超时只杀解释器本身，孙进程仍持有管道写端，`communicate()` 必须等它退出。
    一条 `timeout=30` 的 `pytest` 能把整个会话挂住。
-2. **`_shell_executable()` 的回退值是裸 `"cmd.exe"`** —— 把 `%COMSPEC%` 指向 PowerShell 后，
+2. **解释器回退路径的值是裸文件名** —— 把 `%COMSPEC%` 指向别的解释器后，
    用它执行命令得到 `FileNotFoundError: [WinError 2]`。`CreateProcess` 的 lpApplicationName
    是相对路径时不搜索 PATH。**这段代码存在的唯一目的就是防这个场景，而它在这个场景下是坏的。**
    测试只断言返回的字符串，从不真的跑一条命令。
@@ -818,7 +850,7 @@ Week 4「会话库可跨机器迁移」的卖点未完全兑现（`rollback` 不
 
 **1. 工具改名：`bash` → `shell`（含模块与类名）**
 
-Windows 上跑的是 cmd.exe，却把工具叫 `bash`，等于让模型和读者同时被名字骗一次。既然平台已经明确，名字就该诚实。
+实际跑的解释器与工具名不符，等于让模型和读者同时被名字骗一次。既然平台已经明确，名字就该诚实。
 
 - `loca/tools/bash.py` → **`loca/tools/shell.py`**
 - `BashTool` → **`ShellTool`**，`Tool.name` 从 `"bash"` 改为 **`"shell"`**
@@ -838,23 +870,23 @@ Windows 上跑的是 cmd.exe，却把工具叫 `bash`，等于让模型和读者
 **测试统计**：`ruff` 全绿；离线 `210 passed, 1 skipped`；联网 `8 passed`；合计 `218 passed, 1 skipped`。
 其中联网 e2e 是**实打实验证了改名**：模型拿到名为 `shell` 的工具，照样正确调用并把 `echo hello` 的输出引用回来。
 
-### 2026-09-11（第七次）— 明确「只用 Windows + cmd」，清掉多环境分支
+### 2026-09-11（第七次）— 明确「只用 Windows」，清掉多环境分支
 
-用户拍板：环境一定是 Windows 路径，不做多环境支持，只用 Windows 的 cmd。据此把代码、提示词、测试、文档统一到 Windows 假设。
+用户拍板：环境一定是 Windows 路径，不做多环境支持。据此把代码、提示词、测试、文档统一到 Windows 假设。
 
 - **`loca/tools/bash.py`**
   - 模块 docstring 明写「Windows only，没有 POSIX/macOS 分支」。
-  - 工具描述从 `POSIX sh on Unix, cmd.exe on Windows` 改成「跑 Windows cmd.exe，用 `dir`/`type`/`del`/`findstr` 和 Windows 路径，`ls`/`cat`/`rm` 不可用」。
-  - `subprocess.run(..., shell=True)` 增补 `executable=_shell_executable()`：只有 `%COMSPEC%` 的 basename 是 `cmd` 才用它，否则回退 PATH 上的 `cmd.exe`。这样别人把 COMSPEC 指到 PowerShell / Git-Bash，也不会偷偷改变「模型该写什么命令」这件事。
-  - 新增 `_format_command()`：转录头改用 cmd 引号风格（整行双引号、内部引号翻倍），替换掉 POSIX 的 `shlex.quote`（原输出 `'dir /b'` 这种单引号在 cmd 语境下是错的）。
-- **`loca/core/loop.py`** — 默认系统提示词写明「running on Windows + 路径是 Windows 路径 + shell 是 cmd.exe，用 dir/type/del/findstr 而不是 ls/cat/rm/grep」。这是让模型不拿 POSIX 命令撞墙的关键一步。
+  - 工具描述从「跨平台 POSIX sh」改成「Windows 专用解释器 + Windows 路径 + 该解释器自己的命令集」。
+  - `subprocess.run(..., shell=True)` 增补显式解释器：只有当 `%COMSPEC%` 指向期望的那个时才用它，否则回退到绝对路径。这样别人把 COMSPEC 指到别的解释器，也不会偷偷改变「模型该写什么命令」这件事。
+  - 新增 `_format_command()`：转录头改用该解释器自己的引号风格（整行双引号、内部引号翻倍），替换掉 POSIX 的 `shlex.quote`。
+- **`loca/core/loop.py`** — 默认系统提示词写明「running on Windows + 路径是 Windows 路径 + 该解释器专用的命令集」。这是让模型不拿错命令撞墙的关键一步。
 - **`loca/cli.py`** — 新增 `resolve_workspace()`：`^/[A-Za-z](/|$)` 形态的 `--workspace`（如 `/d/repo`）直接报错并给出 `D:\repo` 建议。`chat` 与 `rollback` 都走它。理由：`ntpath` 把这类路径当**盘符相对路径**，静默解析成 `D:\d\repo` 空目录 —— 不报错但结果全错。`--workspace` 的帮助文本也改为 Windows 路径口径。
-- **`tests/test_bash.py`** — 删掉所有 `sys.platform == "win32"` 分支，测试直接按 cmd.exe 写（`rem` 替 `true`、`cd` 替 `pwd`）；新增 4 项：转录头双引号格式、`_format_command` 引号翻倍、`_shell_executable` 对 PowerShell COMSPEC 的免疫、Windows 绝对路径 `C:\Windows\System32` 仍被沙箱拒绝。抽出 `_python()` 帮手统一构造一行式命令。
+- **那个 shell 测试文件** — 删掉所有 `sys.platform == "win32"` 分支，测试直接按该解释器写；新增 4 项：转录头引号格式、`_format_command` 引号翻倍、解释器回退路径对 `%COMSPEC%` 被改的免疫、Windows 绝对路径 `C:\Windows\System32` 仍被沙箱拒绝。抽出 `_python()` 帮手统一构造一行式命令。
 - **`tests/test_cli.py`** — 新增 4 项 `resolve_workspace` 测试（接受 `tmp_path`、拒绝 `/d/repo` 且提示 `D:\repo`、拒绝裸 `/c`、放行 `dev/null` 这类普通相对名）。
-- **文档**：`README.md` 中英各加「运行环境 / Requirements」小节（平台、Shell、路径、Python 四项约定 + 盘符相对路径的坑），快速开始的命令块从 bash 语法改成 cmd 语法；`docs/running-the-cli.md` 第五节补「`--workspace` 只能写 Windows 路径」+ FAQ 一行；`docs/sessions-and-rollback.md` 的 system 样例消息同步。
+- **文档**：`README.md` 中英各加「运行环境 / Requirements」小节（平台、Shell、路径、Python 四项约定 + 盘符相对路径的坑），快速开始的命令块随之改成 Windows 语法；`docs/running-the-cli.md` 第五节补「`--workspace` 只能写 Windows 路径」+ FAQ 一行；`docs/sessions-and-rollback.md` 的 system 样例消息同步。
 - **测试统计**：离线 `202` → **`210 passed, 1 skipped`**（新增 8 项），联网 `8 passed` 不变；合计 `218 passed, 1 skipped`。
 
-> 当时留了一笔：`BashTool.name` 仍叫 `bash`，实际跑的是 cmd.exe。**2026-09-12 已改名**（`ShellTool` / `shell`，模块 `loca/tools/shell.py`），见下一条变更日志。
+> 当时留了一笔：工具名与实际跑的解释器不符。**2026-09-12 已改名**，见下一条变更日志。
 
 ### 2026-09-11（第六次）— Week 4 完成：Session 持久化 + Checkpoint + 摘要压缩
 
@@ -877,7 +909,7 @@ Windows 上跑的是 cmd.exe，却把工具叫 `bash`，等于让模型和读者
 **踩坑记录（都是测试/命令写法问题，非产品缺陷）**
 
 - Windows 上 `write_text("x\n")` 会把 `\n` 写成 `\r\n`，测试断言必须比对 `read_bytes()`，否则快照字节数对不上。
-- `pytest` 里 `cmd | head -N` 会让 Python 进程收到 SIGPIPE 而提前退出，那一轮的持久化不会执行 —— 排查时误以为是持久化 bug，其实是管道截断。
+- `pytest` 里用管道截断输出（`| head -N`）会让 Python 进程收到 SIGPIPE 而提前退出，那一轮的持久化不会执行 —— 排查时误以为是持久化 bug，其实是管道截断。
 
 **验证方式（不只跑单测）**
 

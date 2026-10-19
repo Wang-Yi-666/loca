@@ -662,3 +662,27 @@ def test_a_bad_session_id_is_refused_before_the_provider_is_called(
     # No session event either: nothing was created, so nothing was announced.
     assert "session" not in [e["type"] for e in events]
     assert provider.calls == 0
+
+
+def test_chat_threaded_worker_persists_session(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Worker thread streams to completion and persists session successfully."""
+    provider = _read_then_answer()
+    monkeypatch.setattr(server, "get_provider", lambda *a, **k: provider)
+
+    events = _stream_turn(client, {"message": "read pyproject.toml please"})
+    types = [e["type"] for e in events]
+    assert types[0] == "session"
+    assert "done" in types
+
+    sess_id = _session_of(events)
+    store = server.open_store()
+    try:
+        sess = store.get_session(sess_id)
+        assert sess is not None
+        messages = store.load_messages(sess_id)
+        assert len(messages) > 0
+    finally:
+        store.close()
+

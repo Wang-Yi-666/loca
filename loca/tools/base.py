@@ -39,6 +39,9 @@ class Tool(ABC):
     name: str
     description: str
     input_schema: dict[str, Any]
+    #: If True, tool invocation is side-effect-free and can run concurrently
+    #: with other read-only tools without snapshotting checkpoints.
+    is_readonly: bool = False
 
     @abstractmethod
     def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:

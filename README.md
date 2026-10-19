@@ -56,7 +56,7 @@ tests/            # 离线单测 + 真实 DeepSeek e2e（无 key 自动跳过）
 
 ## 跑分（真实数据）
 
-> ⚠️ **这是 2026-09 的旧口径**：那一轮跑在 **cmd.exe** 之下。2026-10-12 换成 `bash` + `powershell` 后，模型写的命令语言变了，**这个数字不再可比**。归档保留以示记录，重跑后会更新。
+> ⚠️ **这是 2026-09 的旧口径**：那一轮用的 shell 与现在不同。2026-10-12 换过之后，模型写出命令的语言也变了，**这个数字不再可比**。归档保留以示记录，重跑后会更新。
 
 DeepSeek 默认模型、36 个自带任务、每题 1 次、4 并发 —— **pass@1 = 91.7%（33/36）**：
 
@@ -264,10 +264,10 @@ agent-engineering internship. The living checklist is
 
 ## Benchmark (real numbers)
 
-> ⚠️ **Old measurement (2026-09)**: this run used **cmd.exe** as the shell. On
-> 2026-10-12 the agent moved to `bash` + `powershell`, so the commands it writes
-> are different and **the number is no longer comparable**. It is kept as a
-> record of that run; a re-run will replace it.
+> ⚠️ **Old measurement (2026-09)**: this run used a different shell from the
+> one the agent has now, so the commands it writes are different and **the
+> number is no longer comparable**. It is kept as a record of that run; a
+> re-run will replace it.
 
 DeepSeek's default model, 36 shipped tasks, 1 attempt each, 4 workers —
 **pass@1 = 91.7% (33/36)**:

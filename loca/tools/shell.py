@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import locale
 import os
+import re
 import subprocess
 import threading
 import time
@@ -74,6 +75,51 @@ _REAP_TIMEOUT = 5.0
 
 #: Read size for the pipe-draining threads.
 _READ_CHUNK = 8192
+
+#: Patterns of catastrophic, destructive system commands to guard against.
+_DANGEROUS_COMMAND_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"\brm\s+-[a-zA-Z]*(?:r.*f|f.*r)[a-zA-Z]*\s+([/~]|/\*|[a-zA-Z]:[/\\])",
+            re.IGNORECASE,
+        ),
+        "recursive forced deletion of root, home, or drive path",
+    ),
+    (
+        re.compile(
+            r"\b(?:del|rd|rmdir)\b.*(?:/s|/q).*(?:/s|/q).*\b[a-zA-Z]:\\?(?:$|\s|windows|system32)",
+            re.IGNORECASE,
+        ),
+        "recursive deletion of system root or drive root",
+    ),
+    (
+        re.compile(r"\bformat\s+[a-zA-Z]:(?:\s|$)", re.IGNORECASE),
+        "drive format command",
+    ),
+    (
+        re.compile(
+            r"\b(?:remove-item|ri)\b.*-(?:recurse|r).*(?:-force|-fo).*(?:[a-zA-Z]:\\|\$env:systemroot|\$home)",
+            re.IGNORECASE,
+        ),
+        "PowerShell recursive forced deletion of system or drive root",
+    ),
+    (
+        re.compile(r"\b(?:shutdown\s+/[srp]|stop-computer)\b", re.IGNORECASE),
+        "system shutdown or reboot command",
+    ),
+    (
+        re.compile(r"\b(?:diskpart|bcdedit)\b", re.IGNORECASE),
+        "low-level disk partitioning or boot configuration command",
+    ),
+)
+
+
+def _check_dangerous_command(command: str) -> str | None:
+    """Detect high-risk catastrophic destructive commands."""
+    for pattern, reason in _DANGEROUS_COMMAND_PATTERNS:
+        if pattern.search(command):
+            return reason
+    return None
 
 
 def _decode(data: bytes) -> str:
@@ -293,6 +339,16 @@ class ShellTool(Tool):
         validate_arguments(self.input_schema, arguments)
 
         command = arguments["command"]
+        danger = _check_dangerous_command(command)
+        if danger:
+            return ToolResult(
+                content=(
+                    f"Refusing to execute potentially catastrophic command "
+                    f"({danger}): {command!r}"
+                ),
+                is_error=True,
+            )
+
         timeout = int(arguments.get("timeout", _DEFAULT_TIMEOUT))
         cwd_str = arguments.get("cwd")
         if cwd_str is not None:

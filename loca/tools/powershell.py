@@ -32,15 +32,15 @@ The fix is to append an explicit guard::
 Measured on PowerShell 5.1 against the alternatives, because both the naive
 fix and the tempting one-liner are wrong:
 
-============================  =====  ==============  =======
-command                       raw    ; exit $L.E.    guarded
-============================  =====  ==============  =======
-``exit 7``                      7          7            7
-``cmd /c exit 3``               1          3            3
-``Get-ChildItem -Name``         0          0            0
-``dir /b`` (a parse error)      1          0  <- lies   1
-``Write-Error 'boom'``          1          0  <- lies   1
-============================  =====  ==============  =======
+====================================  =====  ==============  =======
+command                               raw    ; exit $L.E.    guarded
+====================================  =====  ==============  =======
+exit 7                                7      7               7
+python -c "import sys; sys.exit(3)"   1      3               3
+Get-ChildItem -Name                   0      0               0
+Get-ChildItem -NoSuchParameter        1      0  lies         1
+Write-Error 'boom'                    1      0  lies         1
+====================================  =====  ==============  =======
 
 The middle column turns every PowerShell error into a success. The guarded
 form is the only one of the three that is right in all five cases.

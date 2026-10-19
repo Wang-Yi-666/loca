@@ -60,9 +60,10 @@ class AgentSpec:
     #: Short identifier. Shows up in error messages.
     name: str
     #: The system prompt. This is *policy* — the prompt a coding agent needs
-    #: says "Windows", "cmd.exe" and "use dir instead of ls", none of which a
-    #: harness has any business asserting. ``AgentLoop.DEFAULT_SYSTEM_PROMPT``
-    #: is the neutral fallback for a loop built without a spec.
+    #: names a platform, a preferred shell and which commands to use there,
+    #: none of which a harness has any business asserting.
+    #: ``AgentLoop.DEFAULT_SYSTEM_PROMPT`` is the neutral fallback for a loop
+    #: built without a spec.
     system_prompt: str
     #: Tools this agent may call, by registry name and in this order. A name
     #: that is not registered raises at build time, rather than handing the

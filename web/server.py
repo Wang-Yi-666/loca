@@ -35,12 +35,15 @@ Then open http://localhost:8765 in a browser.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -180,24 +183,6 @@ async def chat(turn: ChatTurn) -> EventSourceResponse:
             yield {"event": "message", "data": _json({"type": "error", "message": str(exc)})}
             return
 
-        store = open_store()
-        store.ensure_session(session_id, workspace=workspace, provider=provider.name)
-
-        # Build through loca.agents, like the CLI and the benchmark do. This is
-        # the line that was missing twice: without it the loop runs without a
-        # CheckpointManager (no CHECKPOINT event, so the undo button has nothing
-        # to attach to) and without a ContextManager (so a long browser
-        # conversation dropped its oldest turns instead of summarizing them).
-        runtime = build_agent(
-            CODING_AGENT,
-            provider=provider,
-            workspace=workspace,
-            session_id=session_id,
-            store=store,
-        )
-        loop, ctx = runtime.loop, runtime.ctx
-
-        # Convert history from JSON into Message objects.
         from loca.providers.types import Message, Role
 
         history: list[Message] = []
@@ -209,19 +194,51 @@ async def chat(turn: ChatTurn) -> EventSourceResponse:
                 )
             )
 
-        try:
-            for event in loop.run(ctx, user_message=turn.message, history=history):
-                payload = _serialize_event(event)
+        # The execution loop is synchronous and does blocking I/O (network calls
+        # to LLMs, subshells). Run it on a worker thread and stream events back
+        # through an asyncio.Queue so the ASGI event loop thread is never blocked.
+        # SQLite connection is created, used, and closed on the worker thread.
+        loop_async = asyncio.get_running_loop()
+        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+        def _worker() -> None:
+            store = open_store()
+            store.ensure_session(session_id, workspace=workspace, provider=provider.name)
+            runtime = build_agent(
+                CODING_AGENT,
+                provider=provider,
+                workspace=workspace,
+                session_id=session_id,
+                store=store,
+            )
+            loop, ctx = runtime.loop, runtime.ctx
+            try:
+                for event in loop.run(ctx, user_message=turn.message, history=history):
+                    loop_async.call_soon_threadsafe(queue.put_nowait, ("event", event))
+            except Exception as exc:  # pragma: no cover - defensive
+                loop_async.call_soon_threadsafe(queue.put_nowait, ("error", exc))
+            finally:
+                try:
+                    _persist(store, session_id, ctx, loop)
+                finally:
+                    store.close()
+                    loop_async.call_soon_threadsafe(queue.put_nowait, ("done", None))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+        while True:
+            kind, val = await queue.get()
+            if kind == "event":
+                payload = _serialize_event(val)
                 if payload is not None:
                     yield {"event": "message", "data": _json(payload)}
-        except Exception as exc:  # pragma: no cover - defensive
-            yield {
-                "event": "message",
-                "data": _json({"type": "error", "message": f"{type(exc).__name__}: {exc}"}),
-            }
-        finally:
-            _persist(store, session_id, ctx, loop)
-            store.close()
+            elif kind == "error":
+                yield {
+                    "event": "message",
+                    "data": _json({"type": "error", "message": f"{type(val).__name__}: {val}"}),
+                }
+            elif kind == "done":
+                break
 
     return EventSourceResponse(event_source())
 

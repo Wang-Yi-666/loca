@@ -184,3 +184,52 @@ def test_history_is_extended_not_replaced(
     assert sent[0].role.value == "system"
     assert sent[1].content == "old question"
     assert sent[2].content == "new question"
+
+
+class _ReadonlyEchoTool(Tool):
+    name = "readonly_echo"
+    description = "Read-only echo."
+    is_readonly = True
+    input_schema = {
+        "type": "object",
+        "properties": {"val": {"type": "string"}},
+        "required": ["val"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        return ToolResult(content=f"read:{arguments['val']}")
+
+
+def test_parallel_readonly_tool_calls_run_and_preserve_order(ctx: ToolContext) -> None:
+    tool = _ReadonlyEchoTool()
+    provider = FakeProvider(
+        [
+            [
+                StreamChunk(
+                    delta_tool_calls=[
+                        ToolCall(id="c1", name="readonly_echo", arguments={"val": "A"}),
+                        ToolCall(id="c2", name="readonly_echo", arguments={"val": "B"}),
+                    ],
+                    finish_reason=FinishReason.TOOL_USE,
+                )
+            ],
+            _scripted_text("done"),
+        ]
+    )
+    loop = AgentLoop(provider=provider, tools=[tool], system_prompt="x")
+    events = list(loop.run(ctx, user_message="read both"))
+
+    call_events = [e for e in events if e.type == EventType.TOOL_CALL]
+    result_events = [e for e in events if e.type == EventType.TOOL_RESULT]
+    assert len(call_events) == 2
+    assert len(result_events) == 2
+    assert [c.data["id"] for c in call_events] == ["c1", "c2"]
+    assert [r.data["content"] for r in result_events] == ["read:A", "read:B"]
+
+    last_req = provider.requests[1]
+    tool_msgs = [m for m in last_req.messages if m.role.value == "tool"]
+    assert len(tool_msgs) == 2
+    assert tool_msgs[0].tool_call_id == "c1"
+    assert tool_msgs[1].tool_call_id == "c2"
+

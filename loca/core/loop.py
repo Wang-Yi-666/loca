@@ -36,6 +36,7 @@ Durability (Week 4):
 
 from __future__ import annotations
 
+import concurrent.futures
 import time
 from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
@@ -313,35 +314,69 @@ class AgentLoop:
                 )
                 return
 
-            # Execute each tool call and append the result message.
-            for call in tool_calls:
-                yield AgentEvent(
-                    type=EventType.TOOL_CALL,
-                    data={
-                        "id": call.id,
-                        "name": call.name,
-                        "arguments": call.arguments,
-                    },
-                )
-                checkpoint = self._capture_checkpoint(call, ctx, step=global_step)
-                if checkpoint is not None:
-                    yield checkpoint
-                result = self._execute_tool(call, ctx)
-                yield AgentEvent(
-                    type=EventType.TOOL_RESULT,
-                    data={
-                        "name": call.name,
-                        "content": result.content,
-                        "is_error": result.is_error,
-                    },
-                )
-                messages.append(
-                    Message(
-                        role=Role.TOOL,
-                        content=result.content,
-                        tool_call_id=call.id,
+            # Execute tool calls. Batches of purely read-only tools (like read_file)
+            # are executed concurrently to minimize wall-clock latency while
+            # preserving deterministic event and message ordering.
+            if len(tool_calls) > 1 and all(self._is_readonly(c) for c in tool_calls):
+                for call in tool_calls:
+                    yield AgentEvent(
+                        type=EventType.TOOL_CALL,
+                        data={
+                            "id": call.id,
+                            "name": call.name,
+                            "arguments": call.arguments,
+                        },
                     )
-                )
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(len(tool_calls), 8)
+                ) as pool:
+                    futures = [pool.submit(self._execute_tool, call, ctx) for call in tool_calls]
+                    results = [f.result() for f in futures]
+                for call, result in zip(tool_calls, results, strict=True):
+                    yield AgentEvent(
+                        type=EventType.TOOL_RESULT,
+                        data={
+                            "name": call.name,
+                            "content": result.content,
+                            "is_error": result.is_error,
+                        },
+                    )
+                    messages.append(
+                        Message(
+                            role=Role.TOOL,
+                            content=result.content,
+                            tool_call_id=call.id,
+                        )
+                    )
+            else:
+                for call in tool_calls:
+                    yield AgentEvent(
+                        type=EventType.TOOL_CALL,
+                        data={
+                            "id": call.id,
+                            "name": call.name,
+                            "arguments": call.arguments,
+                        },
+                    )
+                    checkpoint = self._capture_checkpoint(call, ctx, step=global_step)
+                    if checkpoint is not None:
+                        yield checkpoint
+                    result = self._execute_tool(call, ctx)
+                    yield AgentEvent(
+                        type=EventType.TOOL_RESULT,
+                        data={
+                            "name": call.name,
+                            "content": result.content,
+                            "is_error": result.is_error,
+                        },
+                    )
+                    messages.append(
+                        Message(
+                            role=Role.TOOL,
+                            content=result.content,
+                            tool_call_id=call.id,
+                        )
+                    )
 
         # Exhausted max_steps.
         yield AgentEvent(
@@ -493,3 +528,9 @@ class AgentLoop:
                 is_error=True,
             )
         return result
+
+    def _is_readonly(self, call: Any) -> bool:
+        """Check whether a tool call is known to be strictly read-only."""
+        tool = next((t for t in self.tools if t.name == call.name), None)
+        return bool(tool and getattr(tool, "is_readonly", False))
+

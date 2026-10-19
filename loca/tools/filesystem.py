@@ -5,9 +5,9 @@ resolved path lands outside the workspace, so a model cannot reach
 ``~/.ssh/id_rsa`` through *these* tools even if it tries.
 
 Scoped honestly — this is a sandbox on the file tools, not on the project.
-:mod:`loca.tools.shell` runs lines through ``cmd.exe`` on purpose and can reach
-anything the user can; the two policies are documented separately so that
-neither gets mistaken for a whole-program guarantee.
+:mod:`loca.tools.bash` and :mod:`loca.tools.powershell` run commands on
+purpose and can reach anything the user can; the two policies are documented
+separately so that neither gets mistaken for a whole-program guarantee.
 """
 
 from __future__ import annotations
@@ -63,6 +63,7 @@ class ReadFileTool(Tool):
     """Read the contents of a file, optionally slicing by line range."""
 
     name = "read_file"
+    is_readonly = True
     description = (
         "Read the contents of a UTF-8 text file. By default returns the whole "
         "file. Use start_line and end_line (0-indexed, end exclusive) to read "

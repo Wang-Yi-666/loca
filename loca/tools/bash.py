@@ -99,6 +99,5 @@ class BashTool(ShellTool):
 
     def _format_command(self, command: str) -> str:
         # Display only — subprocess receives the raw string. POSIX quoting is
-        # the correct spelling for this shell, which is the opposite of the
-        # cmd.exe rule this tool used to carry.
+        # simply the correct spelling for this shell.
         return shlex.quote(command)
