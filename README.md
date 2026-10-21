@@ -74,7 +74,9 @@ DeepSeek 默认模型、36 个自带任务、每题 1 次、4 并发 —— **pa
 ## 现在能跑什么
 
 - **端到端的流式工具调用。** DeepSeek 流式吐出一个工具调用，循环用 JSON Schema 校验参数、执行、把结果塞回上下文，直到模型不再要工具。
-- **五个工具** —— `read_file`、`write_file`、`edit_file`，外加两个 shell：`bash`（Git Bash，主力）与 `powershell`。文件工具带路径沙箱；两个 shell 带输出截断、超时与进程树清理；全部隔离 `LOCA_*` 环境变量。
+- **五个工具与宿主安全防御** —— `read_file`、`write_file`、`edit_file`，外加两个 shell：`bash`（Git Bash，主力）与 `powershell`。文件工具带路径沙箱；两个 shell 带高危指令前置拦截（拦截 `rm -rf /`、`shutdown`、`format` 等灾难性命令并引导模型自愈）、输出截断、超时与进程树强杀清理；全部隔离 `LOCA_*` 环境变量。
+- **只读工具并发加速** —— 当单步工具调用批次均属于只读工具（如多文件并发 `read_file`）时，通过工作线程池并发执行，严格维持结果回灌与事件流的保序性，显著降低多文件阅读等待时延。
+- **Web GUI 异步非阻塞解耦** —— FastAPI / SSE 服务端将同步阻塞的 Agent 循环调度到独立后台工作线程，通过 `asyncio.Queue` 线程安全推流，彻底避免长耗时模型推理或工具调用挂死 Uvicorn 事件循环，保障心跳与并发请求通畅。
 - **错误恢复** —— 瞬时故障（限流 / 超时 / 5xx）走指数退避重试，且**只在第一个流式分片到达前重试**，用户已经看到的内容不会被重放；回复被输出长度截断时自动追加「继续」；上下文即将溢出前裁剪旧消息。
 - **会话可以断点续聊** —— 每轮结束写进 SQLite（默认 `~/.loca/sessions.db`）。`loca chat --session <id>` 在新进程里接着上次聊；`loca sessions` 列出、查看、删除。
 - **文件改动可回滚** —— `write_file` / `edit_file` 执行前先存快照，`loca rollback <session> <step>` 把工作区还原到任意一步之前；新建的文件会被删掉而不是清空。REPL 内可直接 `/rollback`（不带参数 = 撤销刚才那一下），Web GUI 里每个检查点都带一个 `↩ undo` 按钮，两条路走的是同一份快照。
@@ -85,7 +87,7 @@ DeepSeek 默认模型、36 个自带任务、每题 1 次、4 并发 —— **pa
 - **自带评测集，能证明自己行不行** —— `loca bench run` 把 36 个任务（14 简单 / 12 中等 / 10 困难）并发跑一遍，每个任务跑的是**真实的执行循环和真实的工具**，评分也是**行为式**的（跑 pytest / 比 stdout / 调校验脚本），不看代码 diff。评分文件放在 `hidden/`：agent 看不到，判分前才盖回沙箱 —— 模型改自己的测试文件是没用的。输出 pass@1、pass@k、按难度的分解、失败归因和 token / 步数成本，支持 `--json`、`--compare` 多 provider 对比。
 - **任务集自身也有测试** —— `loca bench verify` 逐题确认「起始工作区必须判不过、参考答案必须判得过」。一道题若初始就通过，它什么都没在测；一道题若参考答案都过不了，它报的每个失败都是噪音。
 - **harness 和 agent 是分开的** —— 执行循环不认识「coding」这个词，它只依赖 `LLMProvider` 和工具协议两个抽象（`core/` 连 `observability/` 都只在类型注解里出现）。提示词、工具集、步数上限、token 预算这些**策略**集中在 `loca/agents.py` 的 `AgentSpec` 里，项目自带的是 `CODING_AGENT`；CLI、Web GUI、Benchmark 三个入口都调同一个 `build_agent()` 装配，所以任何一个入口都不会漏挂一样能力（检查点、上下文压缩、轨迹）。有一条测试专门钉住这件事：入口模块不许自己 `new` 循环。
-- **445 项离线测试**（无跳过项）+ 8 项真实 DeepSeek e2e 测试。
+- **485 项离线测试**（无跳过项）+ 8 项真实 DeepSeek e2e 测试（合计 493 项）。
 
 ## 运行环境
 
@@ -139,7 +141,7 @@ pytest -v
 
 ```
 $ loca chat --workspace D:\some\repo
-loca · provider deepseek · 4 tool(s) · workspace D:\some\repo
+loca · provider deepseek · 5 tool(s) · workspace D:\some\repo
 
 you › 读一下 README.md，总结 status 那一节
 assistant → read_file(path='README.md')
@@ -288,8 +290,9 @@ it and what the three failures were is in [`docs/benchmark.md`](docs/benchmark.m
 - **Streaming tool use end-to-end.** DeepSeek streams a tool call, the loop
   validates the arguments against JSON Schema, executes it, feeds the result
   back, and continues until the model stops asking for tools.
-- **Four tools** — `read_file`, `write_file`, `edit_file`, `shell` — with path
-  sandboxing, output truncation, timeouts, and `LOCA_*` env isolation.
+- **Five tools and host protection** — `read_file`, `write_file`, `edit_file`, plus two shells: `bash` (Git Bash, primary) and `powershell`. Filesystem tools enforce path sandboxing; both shells feature destructive command interception (`rm -rf /`, `shutdown`, `format`, etc.), output truncation, execution timeouts, process-tree cleanup, and `LOCA_*` env isolation.
+- **Parallel read-only tool execution** — when a model emits multiple read-only tool calls in a single step (such as multiple concurrent `read_file` calls), they run concurrently in a thread pool while preserving strict event stream and message ordering.
+- **Non-blocking Web GUI server** — FastAPI / SSE endpoints offload the synchronous agent loop to a dedicated background worker thread and bridge events via `asyncio.Queue`, preventing long-running LLM inferences or tool executions from starving the Uvicorn event loop.
 - **Error recovery** — exponential-backoff retries for transient provider
   failures (retrying only *before* the first streamed chunk, so nothing the
   user already saw gets replayed), automatic continuation when a reply is cut
@@ -343,7 +346,7 @@ it and what the three failures were is in [`docs/benchmark.md`](docs/benchmark.m
   `build_agent()`, so no entry point can be missing a capability (checkpoints,
   context compaction, tracing) the others have. A test enforces it: entry-point
   modules may not construct a loop themselves.
-- **445 offline tests** (nothing skipped) and 8 live DeepSeek e2e tests.
+- **485 offline tests** (nothing skipped) and 8 live DeepSeek e2e tests (493 total).
 
 ## Requirements
 
@@ -399,7 +402,7 @@ printed inline.
 
 ```
 $ loca chat --workspace D:\some\repo
-loca · provider deepseek · 4 tool(s) · workspace D:\some\repo
+loca · provider deepseek · 5 tool(s) · workspace D:\some\repo
 
 you › read README.md and summarise the status section
 assistant → read_file(path='README.md')

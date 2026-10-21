@@ -33,7 +33,7 @@
 集成终端会弹出来，显示：
 
 ```
-loca · provider deepseek · 4 tool(s) · workspace D:\Projects\loca
+loca · provider deepseek · 5 tool(s) · workspace D:\Projects\loca
 Type 'exit' or Ctrl-C to quit.
 
 
@@ -157,10 +157,12 @@ steps 2  ·  tokens 2134  ·  finish stop  ·  prompt 1079 · completion 12
 
 **两个 shell 故意不设这条边界** —— 它们存在的意义就是跑 `git`、`pytest`、`node` 这些住在工作区外面的程序，所以只校验工作目录，不限制命令能碰到什么。这个差别是刻意的，文档里写清楚而不是假装有边界。
 
+> 🛡️ **安全防御机制**：虽然 shell 故意不设路径沙箱，但内置了**高危破坏性指令前置拦截**（如 `rm -rf /`、`rm -rf C:\`、`format`、`shutdown` 等）。若模型产生幻觉或不慎下发此类灾难性指令，工具会主动拒绝执行并给出安全提示，引导模型自纠；同时在命令执行超时时强杀整棵子进程树，防止后台孤儿进程残留。
+
 启动时打印的那一行就是在告诉你范围：
 
 ```
-loca · provider deepseek · 4 tool(s) · workspace D:\Projects\loca
+loca · provider deepseek · 5 tool(s) · workspace D:\Projects\loca
                                                 ^^^^^^^^^^^^^^^^^^ 就是这个
 ```
 

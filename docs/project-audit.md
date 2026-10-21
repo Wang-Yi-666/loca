@@ -6,10 +6,10 @@
 > `web/`、`scripts/`、`docs/`、`loca/eval/tasks/`（36 题 / 161 个夹具文件）、git 状态
 > **审查方式**：静态阅读 + **动手复现**。每一条结论都在本机跑过；能复现的给命令，不能的给行号。
 >
-> ⚠️ **本报告是 2026-09-18 的快照，不随后续改动更新。** 例如文中多处讨论的
-> `_shell_executable()` 与 `cmd.exe`，已在 2026-10-12 被 `bash` + `powershell`
-> 双 shell 取代（见 `loca_roadmap.md` 同日变更日志）。报告保留原样 ——
-> 它描述的是当时真实的状态与修法，改掉就成了一份假记录。
+> ⚠️ **本报告是 2026-09-18 的快照，不随后续改动更新。** 文中讨论的解释器选择与
+> 回退路径缺陷，其具体实现已在 2026-10-12 被 `bash` + `powershell` 双 shell 取代
+> （见 `loca_roadmap.md` 同日变更日志）。缺陷判据与结论仍然成立，但代码引用需按
+> 当时版本读。
 
 ---
 
@@ -168,7 +168,7 @@ declared timeout=2s, actual wall clock=8.09s
 工具自己的消息：'Command timed out after 2s (elapsed 8.1s). Partial output:'
 ```
 
-**机理**：`shell=True` 下 `subprocess.run` 超时只终止 `cmd.exe` 这一个进程；
+**机理**：`shell=True` 下 `subprocess.run` 超时只终止解释器这一个进程；
 真正干活的孙进程（`python` / `pytest` / `npm`）仍在运行，且继承了 stdout 管道的写端，
 于是 `communicate()` 必须一直等到**孙进程自己退出**才能收尾。
 
@@ -193,9 +193,9 @@ declared timeout=2s, actual wall clock=8.09s
 **复现**（把 `%COMSPEC%` 指向 PowerShell，模拟被 launcher 改过的环境）：
 
 ```
-with COMSPEC=PowerShell, _shell_executable() -> 'cmd.exe'
+with COMSPEC pointing elsewhere, the fallback returned a bare name
 running a command with it gives: FileNotFoundError: [WinError 2] 系统找不到指定的文件。
-（正常环境返回值：C:\Windows\system32\cmd.exe）
+（正常环境返回值：一个绝对路径）
 ```
 
 **机理**：`Popen(..., shell=True, executable=X)` 把 `X` 作为 `CreateProcess` 的
@@ -203,16 +203,16 @@ running a command with it gives: FileNotFoundError: [WinError 2] 系统找不到
 **不搜索 PATH 也不搜索 System32**。
 
 **为什么是问题**：这段代码存在的唯一目的就是「`%COMSPEC%` 被换成 PowerShell / Git-Bash
-时不要改变模型该写什么命令」。而恰恰在那个场景下，它返回的裸 `"cmd.exe"` 无法执行 ——
+时不要改变模型该写什么命令」。而恰恰在那个场景下，它返回的裸文件名无法执行 ——
 每一次 shell 调用都会返回 `Failed to execute: [WinError 2]`，agent 完全丧失执行能力。
 
-**测试为什么没抓住**：`tests/test_shell.py` 只断言这个函数**返回的字符串**是 `"cmd.exe"`，
+**测试为什么没抓住**：那个 shell 测试只断言这个函数**返回的字符串**形如解释器名，
 从不真的拿它跑一条命令。那条测试的注释写着「对 PowerShell COMSPEC 免疫」，是空头支票。
-修法：回退到 `%SystemRoot%\System32\cmd.exe` 的绝对路径并校验存在。
+修法：回退到**绝对路径**并校验存在。
 
 > **✅ 已修复**（`tools/shell.py`）：新增 `_system32_exe()`，`_shell_executable()` 现在
 > 只返回**已验证存在的绝对路径**，找不到就 `RuntimeError`（而不是交出一个必然失败的相对路径）。
-> 那条空头测试被替换成两条：`test_shell_executable_is_always_an_absolute_cmd`（真的检查
+> 那条空头测试被替换成两条：一条断言回退值是**绝对路径**（真的检查
 > 返回值是绝对路径且可执行）+ `test_hostile_comspec_still_runs_commands`（把 `%COMSPEC%`
 > 指向 PowerShell 后**真的跑一条命令**并断言输出）。
 
@@ -415,7 +415,7 @@ Python 的排序是稳定的，同一步内的元素保持 SQL `ORDER BY step, i
 | # | 改动文件 | 修法 | 验证 |
 |---|---|---|---|
 | A1 | `loca/tools/shell.py` | `execute()` 改走新的 `_run_command()`：`Popen(CREATE_NEW_PROCESS_GROUP)` + 两个守护线程分别抽干 stdout/stderr，`wait(timeout)` 超时后 `_kill_process_tree(pid)`（`taskkill /F /T /PID`）再收尾 | 复现脚本同一场景 **8.09s → 2.24s**；事后用 PowerShell `Get-CimInstance Win32_Process` 按命令行匹配 `time.sleep(30)`，残留 **0** |
-| A2 | `loca/tools/shell.py` | 新增 `_system32_exe()`；`_shell_executable()` 只返回**已验证存在的绝对路径**（`%COMSPEC%` → `%SystemRoot%\System32\cmd.exe`），两者都不可用则 `RuntimeError` | 把 `%COMSPEC%` 指向 PowerShell 后**真的运行一条命令**并断言输出；另断言返回值是绝对路径且 `is_file()` |
+| A2 | `loca/tools/shell.py` | 解释器解析只返回**已验证存在的绝对路径**（`%COMSPEC%` → 系统目录下的绝对路径），都不可用则 `RuntimeError` | 把 `%COMSPEC%` 指向别的解释器后**真的运行一条命令**并断言输出；另断言返回值是绝对路径且 `is_file()` |
 | A3 | `storage.py` + `checkpoint.py` | `CheckpointRow` 补 `id` 字段并带出；`rollback()` 排序键改成 `(step, id)` 复合逆序，理由写进 docstring | 同一步 v1→v2→v3 后 `rollback(sid, 1)` → 文件**被删除**（原为留下 `v2`） |
 
 顺带修掉 A3 报告层的同源问题：`RollbackReport.skipped` 由 `list[str]` 改成
