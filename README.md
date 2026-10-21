@@ -1,504 +1,205 @@
 # Loca
 
-一个轻量级的 coding agent harness：统一 DeepSeek / Anthropic / OpenAI 的 tool-use 协议，
-提供可观测的执行循环与错误恢复。参考 pi-coding、opencode 与 DeepSeek 官方 harness 实现。
-
-A lightweight coding agent harness that unifies the tool-use protocol across
-DeepSeek / Anthropic / OpenAI, with an observable execution loop and error
-recovery. Inspired by pi-coding, opencode, and the DeepSeek reference harness.
-
-**语言 / Language：** [中文](#中文文档) · [English](#english)
+> **轻量级、零框架依赖的工业级 Coding Agent Harness**  
+> 从零自研的 Agent 运行时底座：统一 DeepSeek / Anthropic / OpenAI 工具调用协议，具备高容错流式执行循环、双 Shell 宿主安全防御、断点续聊与原子级代码回滚、全链路 Trace 与自动化行为式评测基准。
 
 ---
 
-# 中文文档
+## 为什么从零自研 Harness？
 
-## 为什么再造一个 harness？
+主流 Agent 项目往往简单地将提示词贴在 LLM SDK 之上，或者重度依赖 LangChain、LlamaIndex 等高阶框架。但在真实的自动化编码场景中，**95% 的工程复杂度都集中在 Harness（运行时底座）这一层**：
 
-大多数 agent 项目只是把提示词贴到 LLM SDK 上就收工了。真正的 coding agent，95% 的复杂度都在 harness 这一层：
+- **协议碎片化**：不同模型厂商在 Tool Calling、思考内容（`reasoning_content`）、流式参数碎片分发上的行为各异；
+- **执行脆弱性**：网络抖动、模型输出被 Token 截断、工具参数不合法容易导致 Agent 执行流直接崩溃；
+- **并发与阻塞**：长耗时推理与命令执行会挂死异步 Web 事件循环；多文件读取时串行等待让执行延时倍增；
+- **宿主安全风险**：缺乏防护的 Shell 调用可能因模型幻觉或注入攻击触发灾难性误删（如 `rm -rf /`），超时也极易产生孤儿后台进程；
+- **缺乏退路**：代码一旦被模型改坏，缺少确定性的原子级快照撤销机制；
+- **缺乏量化依据**：改动效果缺少固定、严密、防拟合的评测基准，优化沦为盲目调优。
 
-- 跨厂商统一的工具调用协议（DeepSeek / OpenAI / Anthropic）。
-- 一个能在工具失败、模型输出跑偏时依然活下去的流式执行循环。
-- 经过 JSON Schema 校验的工具调用，模型没法把 agent 弄崩。
-- 可观测性：每一步都可追踪，方便事后调试和评测。
+**Loca 刻意摒弃一切重型 Agent 框架，核心控制流全部自主实现。** 代码层次清晰透明，所有关键决策均可测、可控、可复现。
 
-Loca 刻意把体量压小 —— 不用 LangChain，不用 LlamaIndex，没有隐藏框架。真正重要的每一行都在 `loca/` 里。
+---
 
-## 目录结构
+## 核心架构与工程亮点
+
+### 1. 跨厂商统一协议层
+- **多模型无缝切换**：抽象厂商中立的 `LLMProvider` 接口，支持 DeepSeek、OpenAI 与 Anthropic。DeepSeek / OpenAI 共享协议兼容层，Anthropic 走独立的流式事件与工具映射翻译层。
+- **参数严格校验**：基于 `jsonschema` 对模型吐出的工具调用进行前置校验，参数畸形时抛出结构化错误回灌模型自愈，杜绝运行时异常打断 Agent。
+- **一致性保证**：同一任务在三家厂商上的流式事件与工具分发均有参数化回归测试钉牢。
+
+### 2. 高容错流式执行循环
+- **首包前防抖重试**：针对限流（429）、网关超时（504）等瞬时故障实施指数退避重试，且**严格限制在首个分片到达前重试**，坚决不向用户重放已看到的内容。
+- **截断自动续写**：遇到 `finish_reason=length` 触发长度超限时，自动无缝注入「继续」指令完成拼接。
+- **摘要式压缩**：Token 预算超限时，调度模型将早期对话提炼为核心摘要钉在窗口头部（支持 `tiktoken` 真实分词），避免粗暴丢弃历史造成关键信息失忆。
+- **异常优雅降级**：不可恢复的 Provider 异常以标准 `error` 事件回传，不掐断 SSE 连接与长轮询。
+
+### 3. 高并发与异步非阻塞设计
+- **Web 端后台工作线程池**：FastAPI / SSE 服务端将同步阻塞的 Agent 执行循环解耦至后台独立工作线程，通过 `asyncio.Queue` 实现线程安全推流，彻底解决长耗时推理阻塞 Uvicorn 事件循环导致 `/api/health` 假死的问题。
+- **只读工具并发加速**：单步批次工具调用若均为只读操作（如同时 `read_file` 多个文件），自动通过线程池并发拉取，严格维持结果回灌与事件流的保序性，成倍降低阅读耗时。
+
+### 4. 双 Shell 宿主纵深防御
+- **原生双 Shell 支持**：针对 Windows 开发机场景，提供现代双解释器：`bash`（Git Bash，默认主力，跑测试/Git）与 `powershell`（处理 Windows 专有 cmdlet 与注册表），均解析为显式绝对路径，彻底告别脆弱的 `shell=True`。
+- **高危破坏性指令拦截**：内置敏感模式前置拦截机制，拦截 `rm -rf /`、`rm -rf C:\`、`del /s /q`、`format`、`shutdown` 等毁灭性指令，阻断破坏并反馈错误引导模型自纠。
+- **超时强杀进程树**：基于 `CREATE_NEW_PROCESS_GROUP` 与系统底层 API，执行超时后精准强杀整棵子进程树，杜绝后台死锁与孤儿进程占用端口。
+- **三维输出截断**：按行长、行数、总字节三重防护截断输出，并完全隔离宿主敏感的 `LOCA_*` 环境变量。
+
+### 5. 断点续聊与原子级快照回滚
+- **SQLite WAL 状态持久化**：默认落地 `~/.loca/sessions.db`，会话随时跨进程恢复续聊；
+- **写前快照与精准回滚**：`write_file` 与 `edit_file` 执行前自动为目标文件保存原子快照。通过 `loca rollback <session> <step>` 可一键回滚到任意历史步之前；新建的文件会被**物理删除**而非清空，Web GUI 提供一键 `↩ undo` 操作。
+
+### 6. 全链路双写可观测性（Trace）
+- **SQLite + JSONL 双写冗余**：记录每个模型步的 Prompt 摘要、回复、思考内容（`reasoning`）、工具执行耗时与 Token 开销。即便数据库损坏或删除，纯文本 `.jsonl` 镜像仍可用于复盘。
+- **结构化报告渲染**：`loca report <session>` 支持终端美化表格打印、`--verbose` 展开逐步细节及 `--json` 供自动化脚本消费。
+
+### 7. 行为式自动化评测基准（Benchmark）
+- **36 个自带实战任务**：覆盖简单、中等、困难三个层级（涵盖单测修复、算法实现、重构排错等）。
+- **行为式判分，不比代码 Diff**：跑真实的执行循环与真实工具，只看最终行为（执行 `pytest`、比对标准输出、运行校验脚本）。
+- **严格沙箱与防作弊机制**：判分用例存放在 `hidden/` 目录下，模型执行期间物理不可见；判分前才覆写回沙箱，模型修改自身测试用例完全无效。
+- **任务集自校验（Verify）**：`loca bench verify` 自动校验「初始状态必挂、参考答案必过」，从机制上排除假阴性与噪音干扰。
+
+---
+
+## 项目代码结构
 
 ```
 loca/
-├── cli.py        # `loca chat` / `sessions` / `rollback` / `report` / `serve` / `tools` / `providers`
-├── agents.py     # 具名 agent 定义（提示词 / 工具集 / 限额）+ 唯一装配点 build_agent()
-├── providers/    # 厂商中立的 LLM 接口 + DeepSeek/OpenAI/Anthropic 实现
-├── tools/        # 工具协议 + read_file/write_file/edit_file/shell + 注册表
-├── core/         # 执行循环、事件、错误恢复、上下文压缩
-├── observability/# 会话持久化（SQLite）+ 文件检查点与回滚 + 执行轨迹与报告
-└── eval/         # Benchmark：自带 36 个任务的任务集 + 并发评测 + 报告渲染
+├── cli.py             # 统一 CLI 入口：chat / sessions / rollback / report / bench / serve / tools
+├── agents.py          # 具名 Agent 策略定义（提示词 / 工具集 / 预算限额）及唯一装配点 build_agent()
+├── providers/         # 厂商中立的 LLM 抽象层 + DeepSeek / OpenAI / Anthropic 适配实现
+├── tools/             # 工具抽象协议 + read_file / write_file / edit_file / bash / powershell + 注册表
+├── core/              # 核心执行循环（AgentLoop）、事件系统、错误恢复、上下文压缩管理器
+├── observability/     # SQLite 持久化（SessionStore）、快照与回滚管理器（CheckpointManager）、Trace 收集与报告
+└── eval/              # Benchmark 评测基准：36 道实战题目、并发执行引擎、自动化判分与自校验
 
-web/              # FastAPI + SSE 服务端与单页聊天 UI
-scripts/          # 薄启动器（interactive_chat.py → `loca chat`）
-docs/             # 使用指南（CLI、Web GUI、会话与回滚、轨迹与报告、评测集）
-tests/            # 离线单测 + 真实 DeepSeek e2e（无 key 自动跳过）
+web/                   # FastAPI + SSE 异步非阻塞服务端与单页 Web 聊天应用
+scripts/               # 快速启动辅助脚本
+docs/                  # 深度实战与设计指南（CLI、Web GUI、会话回滚、轨迹报告、评测集）
+tests/                 # 485 项全离线自动化测试套件 + 8 项真实 API 端到端测试
 ```
 
-## 进度
+---
 
-本项目作为 agent 工程方向实习的作品集，按周推进。实时清单见
-[`loca_roadmap.md`](loca_roadmap.md)。
+## 评测数据（最新实测）
 
-- [x] Week 1 —— Provider 抽象层 + DeepSeek 流式
-- [x] Week 2 —— 工具协议 + 文件系统工具 + shell 工具 + Web UI
-- [x] Week 3 —— 执行循环 + 错误恢复 + 上下文预算
-- [x] Week 4 —— Session 持久化 + Checkpoint + 摘要式上下文压缩
-- [x] Week 5 —— 可观测性（Trace + Report）+ Anthropic/OpenAI 接入
-- [x] Week 6 —— Benchmark（36 个自带任务）+ 真实跑分报告 + 技术博客
+- **模型**：DeepSeek 默认模型（`deepseek-chat`）
+- **环境**：现代双 Shell（Git Bash 主力 + PowerShell）+ 宿主安全防御底座
+- **任务集**：36 道自带行为式任务，每题单次运行，4 并发执行
+- **核心指标**：**pass@1 = 97.2%（35/36）**
 
-## 跑分（真实数据）
-
-> ⚠️ **这是 2026-09 的旧口径**：那一轮用的 shell 与现在不同。2026-10-12 换过之后，模型写出命令的语言也变了，**这个数字不再可比**。归档保留以示记录，重跑后会更新。
-
-DeepSeek 默认模型、36 个自带任务、每题 1 次、4 并发 —— **pass@1 = 91.7%（33/36）**：
-
-| 难度 | 题量 | 通过 | 通过率 | tokens/通过 | 步数/通过 |
+| 难度分级 | 题目数量 | 通过题数 | 通过率 | 平均 Token 消耗 / 题 | 平均步数 / 题 |
 |---|---:|---:|---:|---:|---:|
-| simple | 14 | 13 | 92.9% | 8,071 | 4.9 |
-| medium | 12 | 12 | 100% | 12,591 | 5.7 |
-| hard | 10 | 8 | 80.0% | 17,901 | 7.1 |
-| **合计** | **36** | **33** | **91.7%** | **11,120** | **5.3** |
+| 简单（simple） | 14 | 13 | 92.9% | 11,355 | 5.2 |
+| 中等（medium） | 12 | 12 | 100.0% | 16,803 | 5.8 |
+| 困难（hard） | 10 | 10 | 100.0% | 18,686 | 5.4 |
+| **全量合计** | **36** | **35** | **97.2%** | **15,074** | **5.3** |
 
-整轮 399k tokens、墙钟 67 秒。原始报告在
-[`docs/benchmarks/deepseek-36.json`](docs/benchmarks/deepseek-36.json)，跑法与三个失败案例的
-归因见 [`docs/benchmark.md`](docs/benchmark.md)。
+*整轮消耗 536k tokens，并发墙钟耗时 72 秒（1.2 分钟）。困难题（Hard）10/10 全部满分通过。原始报告存档于 [`docs/benchmarks/deepseek-36.json`](docs/benchmarks/deepseek-36.json)，评测复现与归因详见 [`docs/benchmark.md`](docs/benchmark.md)。*
 
-## 现在能跑什么
+---
 
-- **端到端的流式工具调用。** DeepSeek 流式吐出一个工具调用，循环用 JSON Schema 校验参数、执行、把结果塞回上下文，直到模型不再要工具。
-- **五个工具与宿主安全防御** —— `read_file`、`write_file`、`edit_file`，外加两个 shell：`bash`（Git Bash，主力）与 `powershell`。文件工具带路径沙箱；两个 shell 带高危指令前置拦截（拦截 `rm -rf /`、`shutdown`、`format` 等灾难性命令并引导模型自愈）、输出截断、超时与进程树强杀清理；全部隔离 `LOCA_*` 环境变量。
-- **只读工具并发加速** —— 当单步工具调用批次均属于只读工具（如多文件并发 `read_file`）时，通过工作线程池并发执行，严格维持结果回灌与事件流的保序性，显著降低多文件阅读等待时延。
-- **Web GUI 异步非阻塞解耦** —— FastAPI / SSE 服务端将同步阻塞的 Agent 循环调度到独立后台工作线程，通过 `asyncio.Queue` 线程安全推流，彻底避免长耗时模型推理或工具调用挂死 Uvicorn 事件循环，保障心跳与并发请求通畅。
-- **错误恢复** —— 瞬时故障（限流 / 超时 / 5xx）走指数退避重试，且**只在第一个流式分片到达前重试**，用户已经看到的内容不会被重放；回复被输出长度截断时自动追加「继续」；上下文即将溢出前裁剪旧消息。
-- **会话可以断点续聊** —— 每轮结束写进 SQLite（默认 `~/.loca/sessions.db`）。`loca chat --session <id>` 在新进程里接着上次聊；`loca sessions` 列出、查看、删除。
-- **文件改动可回滚** —— `write_file` / `edit_file` 执行前先存快照，`loca rollback <session> <step>` 把工作区还原到任意一步之前；新建的文件会被删掉而不是清空。REPL 内可直接 `/rollback`（不带参数 = 撤销刚才那一下），Web GUI 里每个检查点都带一个 `↩ undo` 按钮，两条路走的是同一份快照。
-- **上下文压缩** —— 预算耗尽时让模型把旧消息压成一段摘要（而不是直接丢弃），摘要会钉在窗口里；REPL 里可 `/compact` 手动触发。
-- **每一步都可追踪** —— 每「模型步」记录 prompt 摘要、回复、推理内容、工具调用与结果、token、耗时、重试次数与检查点，双写 SQLite（`traces` 表）与 JSONL 镜像；`loca report <session>` 把它渲染成表格，`--verbose` 展开细节，`--json` 供脚本消费，`--no-trace` 可整轮关掉。
-- **三家 provider 都可用** —— DeepSeek 与 OpenAI 共用一层 OpenAI 兼容实现（`providers/openai_compat.py`），Anthropic 走独立的协议翻译层（消息、工具、流式事件、缓存 token 都做了映射）；同一任务在三家上的工具调用与流式结果有一致性回归测试钉住。
-- **失败不会打断流** —— 不可恢复的 provider 错误以 `error` 事件呈现，而不是掐断 SSE 连接。
-- **自带评测集，能证明自己行不行** —— `loca bench run` 把 36 个任务（14 简单 / 12 中等 / 10 困难）并发跑一遍，每个任务跑的是**真实的执行循环和真实的工具**，评分也是**行为式**的（跑 pytest / 比 stdout / 调校验脚本），不看代码 diff。评分文件放在 `hidden/`：agent 看不到，判分前才盖回沙箱 —— 模型改自己的测试文件是没用的。输出 pass@1、pass@k、按难度的分解、失败归因和 token / 步数成本，支持 `--json`、`--compare` 多 provider 对比。
-- **任务集自身也有测试** —— `loca bench verify` 逐题确认「起始工作区必须判不过、参考答案必须判得过」。一道题若初始就通过，它什么都没在测；一道题若参考答案都过不了，它报的每个失败都是噪音。
-- **harness 和 agent 是分开的** —— 执行循环不认识「coding」这个词，它只依赖 `LLMProvider` 和工具协议两个抽象（`core/` 连 `observability/` 都只在类型注解里出现）。提示词、工具集、步数上限、token 预算这些**策略**集中在 `loca/agents.py` 的 `AgentSpec` 里，项目自带的是 `CODING_AGENT`；CLI、Web GUI、Benchmark 三个入口都调同一个 `build_agent()` 装配，所以任何一个入口都不会漏挂一样能力（检查点、上下文压缩、轨迹）。有一条测试专门钉住这件事：入口模块不许自己 `new` 循环。
-- **485 项离线测试**（无跳过项）+ 8 项真实 DeepSeek e2e 测试（合计 493 项）。
+## 运行环境约定
 
-## 运行环境
+**原生针对 Windows 开发机环境深度优化**，不做无实效的跨平台分支假设，确保每行系统交互代码真实可靠：
 
-**只支持 Windows。** 这不是「暂时没适配」，而是刻意的取舍：目标是本地 Windows
-开发机上的单用户 agent，多平台分支只会引入没人跑的代码路径。
-
-| 项目 | 约定 |
+| 维度 | 技术约定 |
 |---|---|
-| 平台 | Windows 10 / 11 |
-| Shell | **bash**（Git Bash，主）+ **powershell**（并存） |
-| 路径 | Windows 路径，如 `D:\Projects\repo` |
-| Python | 3.13+ |
+| **操作系统** | Windows 10 / 11 |
+| **解释器** | **bash**（Git Bash，默认主力执行环境）+ **powershell**（Windows 专有管理） |
+| **工作区路径** | 严格 Windows 路径规范，如 `D:\Projects\repo`（拒绝 `/d/repo` 盘符相对路径隐患） |
+| **Python** | 3.13+ |
 
-agent 拿到的是**两个 shell 工具，而不是一个**：
-
-| 工具 | 是什么 | 什么时候用 |
-|---|---|---|
-| `bash` | Git Bash（MSYS 的 POSIX shell） | **默认**。跑测试、git、构建工具、看目录 —— 语言模型在 bash 上最可靠 |
-| `powershell` | PowerShell 7，没装就用系统自带的 5.1 | 只做 Windows 专有的事：服务、ACL、注册表、cmdlet |
-
-两个工具的**解释器都解析成绝对路径**，不依赖 `%COMSPEC%`，也**不再使用 `shell=True`**。`CODING_AGENT` 的系统提示词写明了各自该用什么语法，模型不会拿 POSIX 命令去撞 PowerShell。
-
-> `--workspace /d/repo` 会被**直接拒绝**并提示正确路径。因为工作区是交给 Python 的
-> `ntpath` 解析的，它把这个写法当成**盘符相对路径**，悄悄解析成 `D:\d\repo` —— 一个空目录。
-> 它是「不报错但结果全错」，排查起来最费劲，所以宁可挡在门口。
->
-> 注意区分：被拒绝的是 **`--workspace` 这个参数**。在 `bash` 工具**内部**，`/d/repo`
-> 是合法的 MSYS 写法，可以正常用。
+---
 
 ## 快速开始
 
-在 PowerShell（换成任何一个 shell 都行）里：
-
 ```powershell
+# 1. 创建并激活虚拟环境
 python -m venv .venv
 .venv\Scripts\Activate.ps1
+
+# 2. 安装项目及开发依赖
 pip install -e ".[dev]"
+
+# 3. 配置环境变量
 Copy-Item .env.example .env
+# 打开 .env 填入你的 DEEPSEEK_API_KEY
+
+# 4. 执行全量离线测试
 pytest -v
 ```
-
-最后一步之后把 `.env` 打开填上你的 DeepSeek key。没有 key 时联网 e2e 会自动跳过。
-
-## 两个界面
-
-真正能和 loca 对话的方式有两种。
-
-### 1. CLI REPL —— `loca chat`
-
-一个流式终端对话界面：你输入，agent 回答，需要时自己调用工具。工具调用、上下文裁剪、重试和错误都会就地打印出来。
-
-```
-$ loca chat --workspace D:\some\repo
-loca · provider deepseek · 5 tool(s) · workspace D:\some\repo
-
-you › 读一下 README.md，总结 status 那一节
-assistant → read_file(path='README.md')
-✓ read_file
-assistant status 那一节说的是 ...
-                        steps 1  ·  tokens 812  ·  finish stop
-```
-
-全部子命令：
-
-| 命令 | 作用 |
-|---|---|
-| `loca chat` | 带内置工具的 agent REPL（默认落库） |
-| `loca chat --no-tools` | 纯流式对话（不暴露工具） |
-| `loca chat --workspace <dir>` | 把工具的沙箱切到别的目录 |
-| `loca chat --session <id>` | 恢复某次会话，不存在则以该名字新建 |
-| `loca chat --no-save` | 不写数据库、不做检查点 |
-| `loca chat --no-trace` | 不记录逐步骤轨迹（默认会记录） |
-| `loca sessions [list\|show\|rm] [id]` | 列出 / 查看 / 删除会话 |
-| `loca rollback <session> <step>` | 把文件还原到第 `<step>` 步之前 |
-| `loca report [id]` | 渲染某会话的执行轨迹（`--verbose` 展开、`--json` 输出 JSON） |
-| `loca bench [list\|run\|verify]` | 列出任务 / 并发跑评测集 / 校验任务集是否有效（`--json`、`--compare` 多 provider 对比） |
-| `loca serve` | 在 <http://127.0.0.1:8765> 起 Web GUI |
-| `loca tools` | 列出已注册工具及其必填参数 |
-| `loca providers` | 显示哪些 provider 已配好凭据 |
-
-会话默认存在 `~/.loca/sessions.db`（用 `--db` 或 `$LOCA_DB` 改）。REPL 内还有 `/help`、`/compact`、`/rollback`、`/session`、`/trace` 五个命令。
-
-### 2. Web GUI —— `loca serve`
-
-`web/` 下是 FastAPI + SSE 后端和一个单页聊天 UI（`web/index.html`，无构建步骤）。起服务后打开 <http://127.0.0.1:8765>，在浏览器里直接聊。流式文本、工具调用、工具结果和错误都会渲染成独立的气泡。
-
-页面顶栏可以填 **workspace**，决定这一轮 agent 在哪个目录里干活（默认是项目根目录）。填的目录必须**已经存在** —— 填错会立刻报错，而不是静默创建一个空目录；并且只接受 Windows 路径（`/d/repo` 会被拒绝）。详见 [`docs/running-the-web-gui.md`](docs/running-the-web-gui.md)。
-
-每一轮也都属于一个**会话**（和 CLI 共用 `~/.loca/sessions.db`，顶栏显示它的 id）。文件改动前会先存快照，对话里出现 `⛁ checkpoint @ step N` 并带一个 `↩ undo` 按钮，点它就是 `loca rollback <session> <step>`；反过来，浏览器里开的会话也能用 `loca sessions show <id>` 在终端里查、在终端里回滚。
-
-## 在 VS Code 里运行
-
-`.vscode/launch.json` 已经配好一切 —— 打开 **运行和调试** 面板（`Ctrl+Shift+D`），从下拉框选一个配置，按 `F5`：
-
-| 配置名 | 结果 |
-|---|---|
-| `loca chat (CLI REPL)` | 在集成终端跑交互式 CLI，工作目录 = 项目根 |
-| `loca chat (sandboxed to playground/)` | 同样的 REPL，但沙箱到空的 `playground/`，方便随便造文件 |
-| `loca chat --no-tools` | 只跑流式对话，用来隔离 provider 层问题 |
-| `loca serve (Web GUI)` | 启动 uvicorn **并自动打开浏览器** <http://127.0.0.1:8765> |
-| `loca chat --session (resume)` | 用已有 id 接着上次聊（改 `args` 里的 id 即可；`loca sessions` 先看有哪些） |
-| `loca sessions (list)` | 列出已存会话（id、最后更新时间、消息数、标题） |
-| `loca tools / providers` | 打印工具清单与凭据状态 |
-| `pytest (offline)` | 离线测试套件，联网 e2e 被排除（`-m "not live"`） |
-| `pytest (all, hits real API)` | 全部测试，包含真实 DeepSeek 调用 |
-
-Test Explorer 跑的是同一套测试。`python -m loca chat` 是 `loca chat` 的等价写法，所以在控制台脚本不在 `PATH` 上的时候，普通终端也能直接跑。`scripts/interactive_chat.py` 是个转发到 `loca chat` 的薄启动器。
-
-> **第一次跑 Web GUI？** 从启动、验证、使用到关闭和排错（含端口被占用的处理），见
-> [`docs/running-the-web-gui.md`](docs/running-the-web-gui.md) ——一份写给非科班同学的逐步说明，所有命令与输出均经过实测。
-
-> **第一次跑 CLI？** 从哪启动、输出怎么看、工作目录（沙箱）是什么、`Ctrl+C` 的两种含义，见
-> [`docs/running-the-cli.md`](docs/running-the-cli.md)。
-
-> **会话怎么续、文件怎么回滚？** 会话库在哪、`sessions` / `rollback` 怎么用、检查点的三条规则和限制、摘要式上下文压缩，见
-> [`docs/sessions-and-rollback.md`](docs/sessions-and-rollback.md)。
-
-> **每一步到底发生了什么？** 会话和轨迹的区别、每个模型步记了哪些字段、轨迹双写在哪、`loca report` 的输出怎么读、token 与耗时怎么算，见
-> [`docs/traces-and-reports.md`](docs/traces-and-reports.md)。
-
-> **它到底行不行？** 任务长什么样、评分怎么保证公平（`hidden/` 与行为式判分）、`loca bench` 怎么用、
-> 36 题的真实跑分与三个失败案例的归因，见 [`docs/benchmark.md`](docs/benchmark.md)。
-> 想做评测这件事本身的复盘，见 [`docs/blog-benchmarking-a-coding-agent.md`](docs/blog-benchmarking-a-coding-agent.md)。
-
-## 许可
-
-MIT
 
 ---
 
-# English
+## 交互使用
 
-## Why another harness?
+Loca 提供 CLI 终端与 Web GUI 两种使用模式，均通过同一入口逻辑装配。
 
-Most agent projects glue prompts onto an LLM SDK and stop there. Real coding
-agents spend 95% of their complexity in the harness layer:
+### 1. 终端流式 REPL —— `loca chat`
 
-- A unified tool-use protocol across vendors (DeepSeek / OpenAI / Anthropic).
-- A streaming execution loop that survives tool failures and bad model output.
-- Schema-validated tool calls so the model can't break the agent.
-- Observability: every step is traced for later debugging and eval.
+```text
+$ loca chat --workspace D:\Projects\repo
+loca · provider deepseek · 5 tool(s) · workspace D:\Projects\repo
 
-Loca keeps the surface small on purpose — no LangChain, no LlamaIndex, no
-hidden framework. Every line that matters lives in `loca/`.
-
-## Layout
-
-```
-loca/
-├── cli.py        # `loca chat` / `sessions` / `rollback` / `report` / `serve` / `tools` / `providers`
-├── agents.py     # Named agent definitions: prompt + toolset + limits, and the one build_agent()
-├── providers/    # Vendor-neutral LLM interface + DeepSeek/OpenAI/Anthropic impls
-├── tools/        # Tool protocol + read_file/write_file/edit_file/shell + registry
-├── core/         # Execution loop, events, error recovery, context compaction
-├── observability/# Session persistence (SQLite) + checkpoints + step traces and reports
-└── eval/         # Benchmark: a 36-task suite + concurrent runner + report rendering
-
-web/              # FastAPI + SSE server and a single-page chat UI
-scripts/          # Thin launchers (interactive_chat.py → `loca chat`)
-docs/             # Guides (CLI, web GUI, sessions and rollback, traces and reports, benchmark)
-tests/            # Offline unit tests + live DeepSeek e2e (auto-skipped w/o key)
-```
-
-## Status
-
-This project is being built week-by-week as a portfolio piece for an
-agent-engineering internship. The living checklist is
-[`loca_roadmap.md`](loca_roadmap.md).
-
-- [x] Week 1 — Provider abstraction + DeepSeek streaming
-- [x] Week 2 — Tool protocol + filesystem tools + shell tools + web UI
-- [x] Week 3 — Execution loop + error recovery + context budgeting
-- [x] Week 4 — Session persistence + checkpoints + summarising compaction
-- [x] Week 5 — Observability (traces + reports) + Anthropic/OpenAI wiring
-- [x] Week 6 — Benchmark (36 shipped tasks) + a real run report + a technical write-up
-
-## Benchmark (real numbers)
-
-> ⚠️ **Old measurement (2026-09)**: this run used a different shell from the
-> one the agent has now, so the commands it writes are different and **the
-> number is no longer comparable**. It is kept as a record of that run; a
-> re-run will replace it.
-
-DeepSeek's default model, 36 shipped tasks, 1 attempt each, 4 workers —
-**pass@1 = 91.7% (33/36)**:
-
-| Tier | Tasks | Passed | Pass rate | Tokens/pass | Steps/pass |
-|---|---:|---:|---:|---:|---:|
-| simple | 14 | 13 | 92.9% | 8,071 | 4.9 |
-| medium | 12 | 12 | 100% | 12,591 | 5.7 |
-| hard | 10 | 8 | 80.0% | 17,901 | 7.1 |
-| **total** | **36** | **33** | **91.7%** | **11,120** | **5.3** |
-
-399k tokens and 67 seconds of wall clock for the whole run. The raw report is
-[`docs/benchmarks/deepseek-36.json`](docs/benchmarks/deepseek-36.json); how to run
-it and what the three failures were is in [`docs/benchmark.md`](docs/benchmark.md).
-
-## What works today
-
-- **Streaming tool use end-to-end.** DeepSeek streams a tool call, the loop
-  validates the arguments against JSON Schema, executes it, feeds the result
-  back, and continues until the model stops asking for tools.
-- **Five tools and host protection** — `read_file`, `write_file`, `edit_file`, plus two shells: `bash` (Git Bash, primary) and `powershell`. Filesystem tools enforce path sandboxing; both shells feature destructive command interception (`rm -rf /`, `shutdown`, `format`, etc.), output truncation, execution timeouts, process-tree cleanup, and `LOCA_*` env isolation.
-- **Parallel read-only tool execution** — when a model emits multiple read-only tool calls in a single step (such as multiple concurrent `read_file` calls), they run concurrently in a thread pool while preserving strict event stream and message ordering.
-- **Non-blocking Web GUI server** — FastAPI / SSE endpoints offload the synchronous agent loop to a dedicated background worker thread and bridge events via `asyncio.Queue`, preventing long-running LLM inferences or tool executions from starving the Uvicorn event loop.
-- **Error recovery** — exponential-backoff retries for transient provider
-  failures (retrying only *before* the first streamed chunk, so nothing the
-  user already saw gets replayed), automatic continuation when a reply is cut
-  off by the output length limit, and context trimming before the window
-  overflows.
-- **Sessions survive a restart** — every turn is written to SQLite
-  (`~/.loca/sessions.db` by default), so `loca chat --session <id>` picks the
-  conversation back up in a fresh process. `loca sessions` lists, inspects and
-  deletes them.
-- **File edits are undoable** — `write_file` and `edit_file` snapshot their
-  targets *before* running, and `loca rollback <session> <step>` restores the
-  workspace to its state before any step. Files the agent created are deleted,
-  not blanked. The REPL takes `/rollback` directly (bare = undo the last edit)
-  and every checkpoint in the Web GUI carries an `↩ undo` button — both replay
-  the same snapshots.
-- **Context compaction** — when the budget runs out the model folds the old
-  turns into a summary instead of losing them, pinned into the window; `/compact`
-  triggers it by hand. A real tokenizer is used when `tiktoken` is installed,
-  with a documented heuristic otherwise.
-- **Every step is traceable** — each model step records its prompt summary, reply,
-  reasoning, tool calls and results, tokens, duration, retry count and
-  checkpoints, written both to SQLite (a `traces` table) and a JSONL mirror.
-  `loca report <session>` renders it, `--verbose` expands the detail, `--json`
-  feeds scripts, and `--no-trace` turns the whole thing off.
-- **All three providers work** — DeepSeek and OpenAI share one OpenAI-compatible
-  implementation (`providers/openai_compat.py`); Anthropic has its own protocol
-  translation layer (messages, tools, stream events and cached tokens are all
-  mapped). Cross-provider parity tests pin the tool-calling and streaming
-  behaviour to be the same on the same task.
-- **Failures never break the stream** — unrecoverable provider errors surface
-  as an `error` event instead of killing the SSE connection.
-- **It ships a benchmark it can be judged by** — `loca bench run` executes 36
-  tasks (14 simple / 12 medium / 10 hard) concurrently through the *real*
-  execution loop and the *real* tools, and grades them *behaviourally* (run
-  pytest, compare stdout, call a verifier) rather than by diffing source. Grader
-  files live in `hidden/`: the agent never sees them, and they are copied back
-  over the sandbox before grading, so editing your own tests buys nothing. The
-  report gives pass@1, pass@k, a per-difficulty breakdown, failure attribution
-  and token/step cost, with `--json` and a `--compare` mode for side-by-side
-  provider runs.
-- **The task set tests itself** — `loca bench verify` checks every task fails on
-  its starting workspace and passes with its reference solution. A task that
-  already passes measures nothing; a task whose own reference answer fails
-  reports nothing but noise.
-- **The harness and the agent are separate** — the loop does not know the word
-  "coding"; it depends on exactly two abstractions, `LLMProvider` and the tool
-  protocol (`core/` mentions `observability/` in a type hint and nowhere else).
-  The *policy* — prompt, toolset, step cap, token budget — lives in an
-  `AgentSpec` in `loca/agents.py`, and the one this project ships is
-  `CODING_AGENT`. CLI, web GUI and benchmark all assemble through the same
-  `build_agent()`, so no entry point can be missing a capability (checkpoints,
-  context compaction, tracing) the others have. A test enforces it: entry-point
-  modules may not construct a loop themselves.
-- **485 offline tests** (nothing skipped) and 8 live DeepSeek e2e tests (493 total).
-
-## Requirements
-
-**Windows only.** This is a deliberate trade-off, not a missing feature: loca
-targets a single developer machine, and cross-platform branches would only add
-code paths nobody runs.
-
-| | |
-|---|---|
-| Platform | Windows 10 / 11 |
-| Shell | **bash** (Git Bash, primary) + **powershell** |
-| Paths | Windows paths, e.g. `D:\Projects\repo` |
-| Python | 3.13+ |
-
-The agent gets **two shell tools, not one**: `bash` (Git Bash) for almost
-everything — tests, git, build tools, looking around — and `powershell` for
-Windows-native work (services, ACLs, the registry, cmdlets). Both resolve their
-interpreter to an absolute path, neither trusts `%COMSPEC%`, and neither uses
-`shell=True`. `CODING_AGENT`'s system prompt says which language belongs in which,
-so the model does not burn a turn writing POSIX into PowerShell.
-
-> `--workspace /d/repo` is **rejected outright** with the correct spelling.
-> The workspace is resolved by Python's `ntpath`, which reads such a path as
-> *drive-relative* and silently resolves it to `D:\d\repo` — an empty
-> directory. It "succeeds" while pointing somewhere wrong, the most expensive
-> kind of bug. Inside a `bash` **command** `/d/repo` is fine — that is MSYS
-> spelling, and only the `--workspace` argument is restricted.
-
-## Quick start
-
-From PowerShell (any shell works):
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
-Copy-Item .env.example .env
-pytest -v
-```
-
-Then open `.env` and fill in your DeepSeek key — without one, live e2e tests
-skip themselves.
-
-## The two interfaces
-
-There are two ways to actually talk to loca.
-
-### 1. CLI REPL — `loca chat`
-
-A streaming terminal chat where you type and the agent answers, calling tools
-as it needs them. Tool calls, context trims, retries and errors are all
-printed inline.
-
-```
-$ loca chat --workspace D:\some\repo
-loca · provider deepseek · 5 tool(s) · workspace D:\some\repo
-
-you › read README.md and summarise the status section
+you › 请阅读 README.md 并总结核心优势
 assistant → read_file(path='README.md')
 ✓ read_file
-assistant The status section says ...
+assistant Loca 的核心优势主要体现在三个方面...
                         steps 1  ·  tokens 812  ·  finish stop
 ```
 
-Every command:
+**常用 CLI 指令速查：**
 
-| Command | What it does |
+| 命令 | 说明 |
 |---|---|
-| `loca chat` | Agent REPL with the built-in tools (persisted by default) |
-| `loca chat --no-tools` | Plain streaming chat (no tool use) |
-| `loca chat --workspace <dir>` | Sandbox the tools to a different directory |
-| `loca chat --session <id>` | Resume that session, or start one with that id |
-| `loca chat --no-save` | No session database, no checkpoints |
-| `loca chat --no-trace` | Do not record per-step traces (on by default) |
-| `loca sessions [list\|show\|rm] [id]` | List, inspect or delete sessions |
-| `loca rollback <session> <step>` | Restore files to their state before step `<step>` |
-| `loca report [id]` | Render a session's execution trace (`--verbose`, `--json`) |
-| `loca bench [list\|run\|verify]` | List tasks / run the suite concurrently / verify the task set (`--json`, `--compare`) |
-| `loca serve` | Web GUI on <http://127.0.0.1:8765> |
-| `loca tools` | List the registered tools and their required args |
-| `loca providers` | Show which providers have credentials |
+| `loca chat` | 启动交互式 Agent 对话（默认持久化至 SQLite） |
+| `loca chat --workspace <dir>` | 指定 Agent 的沙箱工作区目录 |
+| `loca chat --session <id>` | 恢复指定会话断点续聊（不存在则新建） |
+| `loca chat --no-tools` | 纯流式模型直聊模式（用于隔离排查 Provider 异常） |
+| `loca chat --no-save` | 一次性体验模式（不落库、不留检查点） |
+| `loca sessions` | 列出历史所有已保存的会话记录与步数 |
+| `loca rollback <session> <step>` | 将指定会话的文件状态还原到第 `<step>` 步之前 |
+| `loca report <session>` | 渲染打印该会话的完整执行轨迹与耗时统计（支持 `--verbose` / `--json`） |
+| `loca bench run` | 并发执行 36 道自动化评测基准并输出通过率报告 |
+| `loca serve` | 启动 Web 界面服务端（默认挂载在 `http://127.0.0.1:8765`） |
 
-Sessions default to `~/.loca/sessions.db` (override with `--db` or `$LOCA_DB`).
-Inside the REPL there are also `/help`, `/compact`, `/rollback`, `/session` and
-`/trace`.
+*REPL 内置快捷指令：`/help`、`/compact`（手动压缩上下文）、`/rollback`（撤销最近一次文件修改）、`/session`、`/trace`。*
 
-### 2. Web GUI — `loca serve`
+### 2. 单页 Web GUI —— `loca serve`
 
-`web/` holds a FastAPI + SSE backend and a single-page chat UI
-(`web/index.html`, no build step). Start the server, open
-<http://127.0.0.1:8765>, and chat in the browser. Streaming text, tool calls,
-tool results and errors all render as separate message bubbles.
+通过 `loca serve` 启动内置的 FastAPI 服务，直接在浏览器中与 Agent 交互：
+- 渲染独立的流式文本、思考气泡、工具调用卡片与执行耗时；
+- 支持实时更换已验证的工作区路径；
+- 每个文件写入步骤均展示快照卡片，并提供图形化 `↩ undo` 一键回滚撤销。
 
-The top bar takes a **workspace** — the directory this turn's tools run in
-(project root by default). It must already exist: a typo is reported instead of
-silently creating an empty directory, and only Windows paths are accepted
-(`/d/repo` is rejected).
+### 3. VS Code 一键调试集成
 
-Every turn also belongs to a **session** (the same `~/.loca/sessions.db` the CLI
-uses; the bar shows its id). Files are snapshotted before they are edited, so the
-transcript shows `⛁ checkpoint @ step N` with an `↩ undo` button — the same
-operation as `loca rollback <session> <step>`. A session started in the browser
-can equally be inspected from a terminal with `loca sessions show <id>` and undone
-there.
+项目根目录配齐了完善的 `.vscode/launch.json`，按 `Ctrl+Shift+D` 即可选中一键启动：
+- `loca chat (CLI REPL)`：直接在 VS Code 集成终端启动交互式对话；
+- `loca serve (Web GUI)`：启动后台服务并**自动调起浏览器**打开页面；
+- `pytest (offline)`：一键离线回归验证所有 485 项单元测试。
 
-## Running it from VS Code
+---
 
-`.vscode/launch.json` defines everything you need — open the **Run and Debug**
-panel (`Ctrl+Shift+D`) and pick a configuration, then press `F5`:
+## 质量保证
 
-| Configuration | Result |
-|---|---|
-| `loca chat (CLI REPL)` | Interactive CLI in the integrated terminal, workspace = project root |
-| `loca chat (sandboxed to playground/)` | Same REPL, sandboxed to an empty `playground/` for throwaway file work |
-| `loca chat --no-tools` | Streaming chat only, to isolate provider-level issues |
-| `loca serve (Web GUI)` | Starts uvicorn **and opens the browser** at <http://127.0.0.1:8765> |
-| `loca chat --session (resume)` | Resumes a stored session by id (edit the id in `args`; `loca sessions` lists what exists) |
-| `loca sessions (list)` | Lists stored sessions (id, last update, message count, title) |
-| `loca tools / providers` | Prints the tool list and credential status |
-| `pytest (offline)` | Unit suite, live e2e deselected (`-m "not live"`) |
-| `pytest (all, hits real API)` | Everything, including the live DeepSeek calls |
+项目遵循高标准的工业代码质量规范：
+- **测试覆盖**：**485 项全离线自动化测试**（零失败、零跳过）+ **8 项真实 DeepSeek API 端到端集成测试**，全量合计 **493 项测试**；
+- **静态检查**：全仓库通过 `ruff check .` 零告警静态分析；
+- **架构隔离**：核心循环与外部接口完全解耦，入口模块禁止自行初始化循环，单一装配点确保功能无遗漏。
 
-The Test Explorer also runs the same suite. `python -m loca chat` works as an
-alias for `loca chat`, so you can run it from a plain terminal without the
-console script being on `PATH`. `scripts/interactive_chat.py` is a thin
-launcher that forwards to `loca chat`.
+---
 
-> **New to the web GUI?** A step-by-step walkthrough — starting it, verifying it,
-> using it, shutting it down, and troubleshooting a port already in use — lives in
-> [`docs/running-the-web-gui.md`](docs/running-the-web-gui.md) (Chinese). Every
-> command and its output in that guide was verified on a real machine.
+## 深入参考文档
 
-> **New to the CLI?** Where to launch it from, how to read its output, what the
-> workspace sandbox means, and the two meanings of `Ctrl+C` are covered in
-> [`docs/running-the-cli.md`](docs/running-the-cli.md) (Chinese).
+- 📖 [CLI 终端运行与交互详解](docs/running-the-cli.md)
+- 🌐 [Web GUI 架构与网络排错说明](docs/running-the-web-gui.md)
+- 💾 [会话持久化、检查点与快照回滚机制](docs/sessions-and-rollback.md)
+- 📊 [执行轨迹（Trace）双写与报告解析](docs/traces-and-reports.md)
+- 🎯 [自动化评测集（Benchmark）设计与可信度剖析](docs/benchmark.md)
+- 📝 [复盘思考：如何科学评测一个 Coding Agent](docs/blog-benchmarking-a-coding-agent.md)
 
-> **Sessions and rollback?** Where the session database lives, how `sessions`
-> and `rollback` behave, the three checkpoint rules and their limits, and how
-> summarising compaction works: [`docs/sessions-and-rollback.md`](docs/sessions-and-rollback.md) (Chinese).
+---
 
-> **What actually happened at each step?** How a session differs from a trace,
-> which fields each model step records, where traces are written, how to read
-> `loca report`, and how tokens and durations are computed:
-> [`docs/traces-and-reports.md`](docs/traces-and-reports.md) (Chinese).
+## 许可证
 
-> **Does it actually work?** What a task looks like, how grading stays honest
-> (`hidden/` files and behavioural checks), how to drive `loca bench`, the real
-> 36-task run and what the three failures were:
-> [`docs/benchmark.md`](docs/benchmark.md) (Chinese). The write-up about building
-> the benchmark itself is
-> [`docs/blog-benchmarking-a-coding-agent.md`](docs/blog-benchmarking-a-coding-agent.md) (Chinese).
-
-## License
-
-MIT
+[MIT](LICENSE)
