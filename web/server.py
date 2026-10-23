@@ -139,7 +139,14 @@ class RollbackRequest(BaseModel):
 @app.get("/")
 async def index() -> FileResponse:
     """Serve the single-page chat UI."""
-    return FileResponse(Path(__file__).parent / "index.html")
+    return FileResponse(
+        Path(__file__).parent / "index.html",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/api/health")

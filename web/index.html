@@ -1,333 +1,1528 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>loca — agent chat</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%235b9cff'/%3E%3Ctext%20x='32'%20y='45'%20font-size='40'%20font-family='monospace'%20font-weight='bold'%20fill='%230e0f13'%20text-anchor='middle'%3El%3C/text%3E%3C/svg%3E" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+<title>loca — Coding Agent Harness</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0%25'%20y1='0%25'%20x2='100%25'%20y2='100%25'%3E%3Cstop%20offset='0%25'%20stop-color='%236366f1'/%3E%3Cstop%20offset='100%25'%20stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width='64'%20height='64'%20rx='16'%20fill='url(%23g)'/%3E%3Cpath%20d='M22%2018v28h22M22%2036h14'%20stroke='%23ffffff'%20stroke-width='5'%20stroke-linecap='round'%20stroke-linejoin='round'%20fill='none'/%3E%3C/svg%3E" />
+
+<!-- Google Fonts: Inter & JetBrains Mono -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
 <style>
   :root {
-    --bg: #0e0f13;
-    --panel: #161821;
-    --panel-2: #1d2030;
-    --border: #262938;
-    --text: #e7e9ee;
-    --muted: #8c93a8;
-    --accent: #5b9cff;
-    --accent-2: #4d8aff;
-    --user: #2a3a55;
-    --assistant: #1d2030;
-    --tool: #2a2238;
-    --tool-err: #4d1f24;
-    --code: #0b0c10;
-    --link: #79b8ff;
-  }
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0; height: 100%;
-    background: var(--bg); color: var(--text);
-    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  }
-  body { display: flex; flex-direction: column; height: 100vh; }
-  header {
-    padding: 14px 22px; border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, #14161e 0%, #0e0f13 100%);
-    display: flex; align-items: center; gap: 12px;
-  }
-  header .logo {
-    width: 26px; height: 26px; border-radius: 7px;
-    background: linear-gradient(135deg, var(--accent), #b46bff);
-    display: flex; align-items: center; justify-content: center;
-    font-weight: 700; color: white;
-  }
-  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-  header .sub { color: var(--muted); font-size: 12px; }
-  header .ws {
-    margin-left: auto; display: flex; align-items: center; gap: 7px;
-    font-size: 12px; color: var(--muted);
-  }
-  header .ws input {
-    width: 250px; background: var(--panel-2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 7px;
-    padding: 4px 8px; font-size: 12px;
-    font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-  }
-  header .ws input:focus { outline: none; border-color: var(--accent); }
-  header .ws input::placeholder { color: #5c637a; }
-  header .health { font-size: 12px; color: var(--muted); }
-  header .health .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #56d97a; margin-right: 5px; }
-  header .health.bad .dot { background: #ff6868; }
+    --bg-base: #090b10;
+    --bg-surface: #0e121b;
+    --bg-elevated: #151b28;
+    --bg-card: #182030;
+    --bg-hover: #1f2a40;
+    --bg-code: #07090f;
+    --border-subtle: rgba(255, 255, 255, 0.08);
+    --border-medium: rgba(255, 255, 255, 0.14);
+    --border-hover: rgba(99, 102, 241, 0.45);
+    --border-active: rgba(99, 102, 241, 0.85);
 
+    --primary: #6366f1;
+    --primary-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 55%, #d946ef 100%);
+    --primary-glow: rgba(99, 102, 241, 0.28);
+    
+    --cyan: #06b6d4;
+    --emerald: #10b981;
+    --amber: #f59e0b;
+    --rose: #f43f5e;
+    --purple: #a855f7;
+
+    --text-primary: #f8fafc;
+    --text-secondary: #cbd5e1;
+    --text-muted: #8b99ae;
+    --text-dim: #5c6b82;
+
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 22px;
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.28);
+    --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.55);
+    --shadow-glow: 0 0 28px rgba(99, 102, 241, 0.25);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%; height: 100%;
+    background-color: var(--bg-base);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.6;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    background-image: 
+      radial-gradient(ellipse 80% 50% at 50% -15%, rgba(99, 102, 241, 0.16), transparent 70%),
+      radial-gradient(circle at 5% 95%, rgba(6, 182, 212, 0.05), transparent 35%),
+      radial-gradient(circle at 95% 85%, rgba(168, 85, 247, 0.06), transparent 40%);
+  }
+
+  /* Custom Sleek Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
+
+  /* ================= Header ================= */
+  header {
+    height: 66px;
+    background: rgba(14, 18, 27, 0.82);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    z-index: 50;
+    flex-shrink: 0;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .brand-logo {
+    width: 38px;
+    height: 38px;
+    border-radius: var(--radius-md);
+    background: var(--primary-gradient);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--shadow-glow);
+    cursor: pointer;
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease;
+  }
+  .brand-logo:hover {
+    transform: scale(1.06);
+    box-shadow: 0 0 32px rgba(99, 102, 241, 0.45);
+  }
+
+  .brand-logo svg {
+    width: 22px;
+    height: 22px;
+    color: white;
+  }
+
+  .brand-info {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .brand-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .brand-title {
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    background: linear-gradient(180deg, #ffffff 0%, #cbd5e1 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .badge-tag {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: rgba(99, 102, 241, 0.15);
+    border: 1px solid rgba(99, 102, 241, 0.35);
+    color: #a5b4fc;
+    font-weight: 500;
+  }
+
+  .brand-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .header-center {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 1;
+    max-width: 520px;
+    margin: 0 24px;
+  }
+
+  .ws-container {
+    width: 100%;
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .ws-icon {
+    position: absolute;
+    left: 12px;
+    color: var(--text-dim);
+    pointer-events: none;
+    display: flex;
+  }
+
+  .ws-input {
+    width: 100%;
+    background: rgba(21, 27, 40, 0.85);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-md);
+    padding: 8px 12px 8px 36px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    transition: all 0.2s ease;
+  }
+
+  .ws-input:focus {
+    outline: none;
+    border-color: var(--primary);
+    background: var(--bg-card);
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+    color: var(--text-primary);
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-subtle);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .pulse-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--emerald);
+    box-shadow: 0 0 10px var(--emerald);
+    transition: background 0.3s ease, box-shadow 0.3s ease;
+  }
+  .pulse-dot.bad {
+    background: var(--rose);
+    box-shadow: 0 0 10px var(--rose);
+  }
+
+  .session-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: var(--radius-sm);
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.22);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: #c7d2fe;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .session-pill:hover {
+    background: rgba(99, 102, 241, 0.16);
+    border-color: rgba(99, 102, 241, 0.45);
+    color: #fff;
+  }
+
+  .btn-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .btn-icon:hover {
+    background: rgba(255, 255, 255, 0.09);
+    color: #fff;
+    border-color: var(--border-hover);
+    transform: translateY(-1px);
+  }
+
+  /* ================= Main Chat Area ================= */
   main {
-    flex: 1; overflow-y: auto; padding: 24px 0 24px;
+    flex: 1;
+    overflow-y: auto;
+    position: relative;
+    padding: 28px 20px 48px;
+    display: flex;
+    flex-direction: column;
     scroll-behavior: smooth;
   }
+
+  .chat-container {
+    width: 100%;
+    max-width: 880px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* Welcome Hero */
+  .welcome-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 48px 20px 24px;
+    margin-bottom: 8px;
+  }
+
+  .welcome-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 16px;
+    border-radius: 999px;
+    background: rgba(99, 102, 241, 0.12);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    color: #a5b4fc;
+    font-size: 12px;
+    font-weight: 500;
+    margin-bottom: 20px;
+    animation: fadeInDown 0.6s ease;
+  }
+
+  .welcome-title {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    margin-bottom: 12px;
+    background: linear-gradient(180deg, #ffffff 0%, #94a3b8 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .welcome-desc {
+    max-width: 600px;
+    font-size: 14px;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin-bottom: 32px;
+  }
+
+  .quick-chips-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    width: 100%;
+    max-width: 700px;
+  }
+
+  @media (max-width: 680px) {
+    .quick-chips-grid { grid-template-columns: 1fr; }
+    .header-center { display: none; }
+  }
+
+  .quick-chip {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px 18px;
+    background: rgba(21, 27, 40, 0.65);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .quick-chip:hover {
+    background: var(--bg-elevated);
+    border-color: var(--border-hover);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .quick-chip-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: var(--radius-sm);
+    background: rgba(99, 102, 241, 0.14);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: #818cf8;
+    font-size: 15px;
+  }
+
+  .quick-chip-content h4 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 3px;
+  }
+
+  .quick-chip-content p {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  /* Chat Turn */
   .turn {
-    max-width: 820px; margin: 0 auto 18px; padding: 0 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    opacity: 0;
+    animation: fadeInUp 0.35s ease forwards;
   }
-  .role {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--muted); margin-bottom: 4px; font-weight: 600;
+
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
   }
+  @keyframes fadeInDown {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .turn-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .turn-avatar {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .turn-avatar.user {
+    background: #3b82f6;
+    color: white;
+  }
+  .turn-avatar.assistant {
+    background: var(--primary-gradient);
+    color: white;
+  }
+
+  /* Message Bubble */
   .bubble {
-    background: var(--user); border: 1px solid var(--border);
-    border-radius: 12px; padding: 10px 14px; white-space: pre-wrap;
-    word-wrap: break-word; overflow-wrap: anywhere;
+    border-radius: var(--radius-lg);
+    padding: 16px 20px;
+    position: relative;
+    word-break: break-word;
+    line-height: 1.65;
   }
-  .bubble.assistant { background: var(--assistant); }
-  .bubble pre, .bubble code {
-    background: var(--code); border-radius: 6px;
-    font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-    font-size: 12.5px;
-  }
-  .bubble pre { padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
-  .bubble code { padding: 1px 5px; }
-  .bubble pre code { padding: 0; background: transparent; }
 
+  .bubble.user {
+    background: linear-gradient(145deg, #182236 0%, #141c2c 100%);
+    border: 1px solid rgba(59, 130, 246, 0.28);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
+    width: 100%;
+    color: #e2e8f0;
+  }
+
+  .bubble.assistant {
+    background: rgba(17, 22, 34, 0.88);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--border-medium);
+    box-shadow: var(--shadow-md);
+    width: 100%;
+    color: var(--text-primary);
+  }
+
+  /* Dedicated Container for Thinking */
+  .thinking-container {
+    width: 100%;
+    margin-bottom: 12px;
+  }
+
+  /* Thinking Box (DeepSeek R1 / Claude 3.7 style) */
+  .thinking-box {
+    background: rgba(168, 85, 247, 0.06);
+    border: 1px solid rgba(168, 85, 247, 0.25);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    transition: all 0.3s ease;
+  }
+  .thinking-box.collapsed .thinking-body {
+    display: none;
+  }
+  .thinking-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: rgba(168, 85, 247, 0.09);
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.2s;
+  }
+  .thinking-header:hover {
+    background: rgba(168, 85, 247, 0.14);
+  }
+  .thinking-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #c084fc;
+  }
+  .thinking-pulse {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #c084fc;
+    animation: thinkingPing 1.2s infinite;
+  }
+  @keyframes thinkingPing {
+    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(192, 132, 252, 0.7); }
+    70% { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(192, 132, 252, 0); }
+    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(192, 132, 252, 0); }
+  }
+  .thinking-meta {
+    font-size: 11px;
+    color: #a855f7;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .thinking-arrow {
+    transition: transform 0.2s ease;
+  }
+  .thinking-box.collapsed .thinking-arrow {
+    transform: rotate(-90deg);
+  }
+  .thinking-body {
+    padding: 12px 14px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: #d8b4fe;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    max-height: 280px;
+    overflow-y: auto;
+    border-top: 1px solid rgba(168, 85, 247, 0.12);
+    background: rgba(10, 8, 16, 0.45);
+  }
+
+  /* Sequential Flow Container inside Assistant Bubble */
+  .flow-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .text-block {
+    word-break: break-word;
+    line-height: 1.65;
+  }
+
+  /* Tool Cards */
   .tool-card {
-    margin-top: 8px; background: var(--tool); border: 1px solid #3a2f4a;
-    border-radius: 10px; padding: 9px 12px; font-size: 12.5px;
+    border-radius: var(--radius-md);
+    background: rgba(15, 20, 32, 0.95);
+    border: 1px solid var(--border-medium);
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
   }
-  .tool-card.is_error { background: var(--tool-err); border-color: #6e2a30; }
-  .tool-card .name { color: #c8a2ff; font-weight: 600; font-family: ui-monospace, monospace; }
-  .tool-card .name.tool-err { color: #ff9da3; }
-  .tool-card pre {
-    background: var(--code); padding: 7px 9px; border-radius: 6px;
-    overflow-x: auto; max-height: 220px; margin: 6px 0 0;
-    font-family: ui-monospace, monospace; font-size: 12px;
+  .tool-card.is_error {
+    border-color: rgba(244, 63, 94, 0.4);
+    background: rgba(30, 16, 22, 0.95);
   }
 
+  .tool-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid var(--border-subtle);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .tool-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow: hidden;
+  }
+  .tool-badge {
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .tool-badge.bash { background: rgba(6, 182, 212, 0.15); color: #22d3ee; }
+  .tool-badge.powershell { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+  .tool-badge.read_file { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+  .tool-badge.write_file, .tool-badge.edit_file { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+  .tool-badge.default { background: rgba(99, 102, 241, 0.15); color: #a5b4fc; }
+
+  .tool-cmd-preview {
+    color: var(--text-secondary);
+    font-weight: 500;
+    max-width: 480px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tool-status-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-family: var(--font-sans);
+    white-space: nowrap;
+  }
+  .tool-status-badge.running { color: var(--amber); }
+  .tool-status-badge.success { color: var(--emerald); }
+  .tool-status-badge.failed { color: var(--rose); }
+
+  .tool-body {
+    padding: 10px 14px;
+    background: var(--bg-code);
+  }
+  .tool-body pre {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: #e2e8f0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 240px;
+    overflow-y: auto;
+    line-height: 1.5;
+  }
+
+  .tool-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 6px 14px;
+    background: rgba(255, 255, 255, 0.015);
+    border-top: 1px solid var(--border-subtle);
+  }
+  .copy-btn-mini {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    transition: all 0.15s;
+    font-family: var(--font-sans);
+  }
+  .copy-btn-mini:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.06); }
+
+  /* Checkpoint & Undo Banner */
+  .checkpoint-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 8px 0;
+    padding: 10px 16px;
+    border-radius: var(--radius-md);
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    font-size: 12px;
+    gap: 12px;
+  }
+  .checkpoint-desc {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #a7f3d0;
+  }
+  .checkpoint-files {
+    font-family: var(--font-mono);
+    color: #34d399;
+    font-weight: 500;
+  }
+  .btn-undo {
+    background: rgba(16, 185, 129, 0.15);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    color: #6ee7b7;
+    border-radius: var(--radius-sm);
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .btn-undo:hover:not(:disabled) {
+    background: rgba(16, 185, 129, 0.3);
+    color: white;
+    border-color: #34d399;
+    transform: translateY(-1px);
+  }
+  .btn-undo:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* System Banner / Note */
+  .sys-note {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    margin: 4px 0;
+  }
+  .sys-note.info {
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.22);
+    color: #a5b4fc;
+  }
+  .sys-note.warn {
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.22);
+    color: #fde68a;
+  }
+  .sys-note.error {
+    background: rgba(244, 63, 94, 0.08);
+    border: 1px solid rgba(244, 63, 94, 0.25);
+    color: #fca5a5;
+  }
+
+  /* Stats Footer */
+  .turn-stats {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 4px;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+  }
+
+  /* Typing Cursor */
+  .typing-cursor::after {
+    content: "▋";
+    color: var(--primary);
+    animation: blink 0.9s infinite;
+    margin-left: 2px;
+  }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+  /* Markdown Styles inside Bubbles */
+  .bubble h1, .bubble h2, .bubble h3, .bubble h4 {
+    margin: 16px 0 8px;
+    font-weight: 600;
+    color: #fff;
+    line-height: 1.35;
+  }
+  .bubble h1 { font-size: 18px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 6px; }
+  .bubble h2 { font-size: 16px; }
+  .bubble h3 { font-size: 14px; }
+  .bubble p { margin: 8px 0; }
+  .bubble ul, .bubble ol { margin: 8px 0 8px 22px; }
+  .bubble li { margin: 3px 0; }
+  .bubble blockquote {
+    border-left: 3px solid var(--primary);
+    margin: 8px 0;
+    padding: 6px 14px;
+    background: rgba(99, 102, 241, 0.06);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    color: var(--text-secondary);
+  }
+  .bubble a { color: #60a5fa; text-decoration: none; }
+  .bubble a:hover { text-decoration: underline; }
+
+  .bubble table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 13px;
+  }
+  .bubble th, .bubble td {
+    border: 1px solid var(--border-medium);
+    padding: 6px 12px;
+    text-align: left;
+  }
+  .bubble th { background: rgba(255, 255, 255, 0.05); font-weight: 600; }
+  .bubble tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+
+  .bubble code {
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: #f472b6;
+  }
+
+  .code-block-wrapper {
+    margin: 12px 0;
+    border-radius: var(--radius-md);
+    background: var(--bg-code);
+    border: 1px solid var(--border-medium);
+    overflow: hidden;
+  }
+  .code-block-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 14px;
+    background: rgba(255, 255, 255, 0.035);
+    border-bottom: 1px solid var(--border-subtle);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .code-block-wrapper pre {
+    padding: 12px 14px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: #e2e8f0;
+    background: transparent;
+  }
+  .code-block-wrapper pre code {
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: inherit;
+  }
+
+  /* ================= Footer & Composer ================= */
   footer {
-    border-top: 1px solid var(--border); padding: 12px 22px 18px;
-    background: var(--panel);
+    padding: 16px 24px 24px;
+    background: rgba(14, 18, 27, 0.88);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-top: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+    z-index: 40;
   }
-  .composer {
-    max-width: 820px; margin: 0 auto;
-    display: flex; align-items: flex-end; gap: 10px;
-    background: var(--panel-2); border: 1px solid var(--border);
-    border-radius: 14px; padding: 9px 12px;
-  }
-  .composer textarea {
-    flex: 1; background: transparent; border: 0; outline: 0;
-    color: var(--text); resize: none; font: inherit; line-height: 1.5;
-    max-height: 180px; min-height: 22px; padding: 4px 0;
-  }
-  .composer button {
-    background: var(--accent); color: white; border: 0;
-    width: 34px; height: 34px; border-radius: 9px; cursor: pointer;
-    font-size: 16px; display: flex; align-items: center; justify-content: center;
-  }
-  .composer button:disabled { background: #3a3f4f; cursor: not-allowed; }
-  .composer button:hover:not(:disabled) { background: var(--accent-2); }
-  .hint { max-width: 820px; margin: 8px auto 0; color: var(--muted); font-size: 11.5px; }
 
-  .typing::after { content: "▍"; animation: blink 1s steps(1) infinite; color: var(--accent); }
-  @keyframes blink { 50% { opacity: 0; } }
+  .composer-wrapper {
+    max-width: 880px;
+    margin: 0 auto;
+    position: relative;
+  }
 
-  header .sess {
-    font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-    font-size: 11.5px; color: var(--muted); white-space: nowrap;
+  .composer-card {
+    background: rgba(21, 27, 40, 0.96);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-lg);
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-shadow: var(--shadow-lg);
+    transition: all 0.25s ease;
   }
-  .role .undo {
-    background: var(--panel-2); color: var(--link); border: 1px solid var(--border);
-    border-radius: 6px; padding: 1px 7px; font: inherit; font-size: 11px;
-    text-transform: none; letter-spacing: 0; cursor: pointer;
+
+  .composer-card:focus-within {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25), var(--shadow-lg);
+    background: rgba(24, 31, 48, 0.98);
   }
-  .role .undo:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
-  .role .undo:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .composer-card textarea {
+    width: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.55;
+    resize: none;
+    max-height: 200px;
+    min-height: 48px;
+    padding: 4px 0;
+  }
+  .composer-card textarea::placeholder {
+    color: var(--text-dim);
+  }
+
+  .composer-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 4px;
+  }
+
+  .composer-hints {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .kbd-key {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+  }
+
+  .composer-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .btn-send {
+    width: 38px;
+    height: 38px;
+    border-radius: var(--radius-md);
+    background: var(--primary-gradient);
+    border: none;
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--shadow-glow);
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .btn-send:hover:not(:disabled) {
+    transform: scale(1.05);
+    box-shadow: 0 0 22px rgba(99, 102, 241, 0.45);
+  }
+  .btn-send:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: #232a3d;
+    box-shadow: none;
+  }
+
+  /* Toast Notification */
+  .toast {
+    position: fixed;
+    bottom: 95px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: rgba(15, 23, 42, 0.95);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--border-medium);
+    padding: 9px 18px;
+    border-radius: 999px;
+    font-size: 12px;
+    color: #e2e8f0;
+    box-shadow: var(--shadow-lg);
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    z-index: 100;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* SVG Icons utility */
+  .icon {
+    width: 16px;
+    height: 16px;
+    stroke-width: 2;
+    stroke: currentColor;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
 </style>
 </head>
 <body>
 
+<!-- Header -->
 <header>
-  <div class="logo">L</div>
-  <div>
-    <h1>loca</h1>
-    <div class="sub">a coding-agent harness · streaming · 5 tools</div>
+  <div class="header-left">
+    <div class="brand-logo" id="btn-logo" title="Loca Coding Agent">
+      <svg viewBox="0 0 24 24" class="icon"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+    </div>
+    <div class="brand-info">
+      <div class="brand-title-wrap">
+        <span class="brand-title">loca</span>
+        <span class="badge-tag">Harness v0.1.0</span>
+      </div>
+      <span class="brand-sub">流式执行 · 工具调用 · 快照回滚</span>
+    </div>
   </div>
-  <div class="ws">
-    <label for="workspace">workspace</label>
-    <input id="workspace" type="text" spellcheck="false" autocomplete="off"
-           placeholder="D:\Projects\repo"
-           title="Absolute Windows path the tools run in. It must already exist. This server listens on 127.0.0.1 only, so everything it can reach is already on this machine." />
+
+  <div class="header-center">
+    <div class="ws-container">
+      <div class="ws-icon">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      </div>
+      <input id="workspace" class="ws-input" type="text" spellcheck="false" autocomplete="off"
+             placeholder="工作空间绝对路径 (例如: D:\Projects\repo)"
+             title="宿主工具执行所在的绝对路径。如需切换目录直接在此输入" />
+    </div>
   </div>
-  <div class="health" id="health"><span class="dot"></span><span id="health-text">checking…</span></div>
-  <div class="sess" id="session"></div>
+
+  <div class="header-right">
+    <div class="status-pill" id="health" title="Provider 服务状态">
+      <span class="pulse-dot" id="health-dot"></span>
+      <span id="health-text">检测环境…</span>
+    </div>
+
+    <div class="session-pill" id="session" title="点击复制 Session ID" style="display:none;">
+      <svg viewBox="0 0 24 24" class="icon" style="width:13px;height:13px;"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+      <span id="session-text">会话</span>
+    </div>
+
+    <button class="btn-icon" id="btn-new-chat" title="重置上下文开启新会话">
+      <svg viewBox="0 0 24 24" class="icon"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      <span>新对话</span>
+    </button>
+  </div>
 </header>
 
-<main id="messages"></main>
+<!-- Main viewport -->
+<main id="messages">
+  <div class="chat-container">
+    
+    <!-- Welcome Hero (hidden once conversation starts) -->
+    <div class="welcome-hero" id="welcome-hero">
+      <div class="welcome-badge">
+        <svg viewBox="0 0 24 24" class="icon" style="width:13px;height:13px;"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        <span>loca Coding Agent 已就绪</span>
+      </div>
+      <h2 class="welcome-title">今天想构建或优化什么代码？</h2>
+      <p class="welcome-desc">
+        Loca 支持 Bash / PowerShell 命令行调用、文件读写与快照回滚。输入指令开始协同编程：
+      </p>
 
-<footer>
-  <div class="composer">
-    <textarea id="input" rows="1" placeholder="Ask loca to do something… (Enter to send · Shift+Enter for newline)"></textarea>
-    <button id="send" title="Send">➤</button>
+      <div class="quick-chips-grid">
+        <div class="quick-chip" data-prompt="分析当前项目的代码架构、目录结构和核心模块">
+          <div class="quick-chip-icon">🔍</div>
+          <div class="quick-chip-content">
+            <h4>分析项目架构</h4>
+            <p>探索目录结构、设计分层与关键依赖</p>
+          </div>
+        </div>
+
+        <div class="quick-chip" data-prompt="查看当前 Git 仓库状态，并总结最近几次提交的改动">
+          <div class="quick-chip-icon">⚡</div>
+          <div class="quick-chip-content">
+            <h4>检查 Git 状态</h4>
+            <p>查看分支、工作区变更及提交历史</p>
+          </div>
+        </div>
+
+        <div class="quick-chip" data-prompt="运行 pytest 离线测试套件：.\.venv\Scripts\pytest.exe -m 'not live' 并分析测试结果">
+          <div class="quick-chip-icon">🧪</div>
+          <div class="quick-chip-content">
+            <h4>运行单元测试</h4>
+            <p>执行自动化测试套件并汇报通过率</p>
+          </div>
+        </div>
+
+        <div class="quick-chip" data-prompt="阅读 pyproject.toml 与 README.md，总结项目配置和使用方法">
+          <div class="quick-chip-icon">📄</div>
+          <div class="quick-chip-content">
+            <h4>读取核心文档</h4>
+            <p>查阅项目配置文件与使用指南</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
-  <div class="hint">Try: <em>List the files in the project and summarize pyproject.toml</em>
-    · file edits are checkpointed — press <strong>⛁ undo</strong> to put them back</div>
+</main>
+
+<!-- Footer Composer -->
+<footer>
+  <div class="composer-wrapper">
+    <div class="composer-card">
+      <textarea id="input" rows="1" placeholder="给 loca 下达指令… (Enter 发送 · Shift+Enter 换行)"></textarea>
+      <div class="composer-bottom">
+        <div class="composer-hints">
+          <span><span class="kbd-key">Enter</span> 发送</span>
+          <span><span class="kbd-key">Shift + Enter</span> 换行</span>
+          <span><span class="kbd-key">⛁ 自动快照</span> 支持一键安全回滚</span>
+        </div>
+        <div class="composer-actions">
+          <button class="btn-send" id="send" title="发送指令 (Enter)">
+            <svg viewBox="0 0 24 24" class="icon" style="width:18px;height:18px;margin-left:2px;"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 </footer>
 
+<!-- Toast Element -->
+<div class="toast" id="toast"></div>
+
 <script>
+// ================= Global State =================
 const messagesEl = document.getElementById("messages");
+const chatContainer = document.querySelector(".chat-container");
 const inputEl = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const healthText = document.getElementById("health-text");
+const healthDot = document.getElementById("health-dot");
 const healthEl = document.getElementById("health");
 const workspaceEl = document.getElementById("workspace");
 const sessionEl = document.getElementById("session");
+const sessionText = document.getElementById("session-text");
+const welcomeHero = document.getElementById("welcome-hero");
+const btnNewChat = document.getElementById("btn-new-chat");
+const toastEl = document.getElementById("toast");
 
-// History: simple in-memory list of {role, content}.
 let history = [];
-
-// Session id. The server mints one and streams it as the first event of the
-// first turn; we echo it back so the transcript and the checkpoint history stay
-// in the same row of the session database. Null = "ask for a new session".
 let sessionId = null;
-
-// Workspace the previous turn ran in, so that switching directories is
-// announced in the transcript instead of silently taking effect.
 let lastWorkspace = null;
+let isStreaming = false;
 
-// -- health check -----------------------------------------------------------
-fetch("/api/health").then(r => r.json()).then(h => {
-  if (!workspaceEl.value) workspaceEl.value = h.default_workspace || "";
-  const providers = h.providers_with_keys || [];
-  if (providers.length === 0) {
-    healthEl.classList.add("bad");
-    healthText.textContent = "no API keys in .env";
+// ================= Utilities =================
+function showToast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  setTimeout(() => toastEl.classList.remove("show"), 2200);
+}
+
+function escapeHtml(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function copyToClipboard(text, successMsg = "已复制到剪贴板") {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => showToast(successMsg));
   } else {
-    healthText.textContent = `${providers.join(", ")} ready`;
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    showToast(successMsg);
   }
-}).catch(() => {
-  healthEl.classList.add("bad");
-  healthText.textContent = "server unreachable";
+}
+
+// Global click delegation for all copy buttons
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".copy-btn-mini");
+  if (btn && btn.dataset.copy) {
+    copyToClipboard(decodeURIComponent(btn.dataset.copy));
+  }
 });
 
-// -- helpers ----------------------------------------------------------------
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text != null) e.textContent = text;
-  return e;
+// Lightweight robust Markdown parser
+function parseMarkdown(md) {
+  if (!md) return "";
+  let text = escapeHtml(md);
+
+  // 1. Code blocks with language and copy button: ```lang\ncode\n```
+  text = text.replace(/```([a-zA-Z0-9_\-\+]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+    const langLabel = lang ? lang.trim() : "code";
+    const rawCode = code.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#039;/g, "'");
+    const escapedAttr = encodeURIComponent(rawCode);
+    return `<div class="code-block-wrapper">
+      <div class="code-block-header">
+        <span>${langLabel}</span>
+        <button class="copy-btn-mini" data-copy="${escapedAttr}">
+          <svg viewBox="0 0 24 24" class="icon" style="width:12px;height:12px;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          复制
+        </button>
+      </div>
+      <pre><code>${code}</code></pre>
+    </div>`;
+  });
+
+  // 2. Inline code: `code`
+  text = text.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+
+  // 3. Headings (# H1, ## H2, ### H3)
+  text = text.replace(/^### (.*$)/gim, "<h3>$1</h3>");
+  text = text.replace(/^## (.*$)/gim, "<h2>$1</h2>");
+  text = text.replace(/^# (.*$)/gim, "<h1>$1</h1>");
+
+  // 4. Blockquotes
+  text = text.replace(/^\> (.*$)/gim, "<blockquote>$1</blockquote>");
+
+  // 5. Bold & Italic
+  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  text = text.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+
+  // 6. Unordered lists: - item or * item
+  text = text.replace(/^\s*[\-\*]\s+(.*$)/gim, "<ul><li>$1</li></ul>");
+  text = text.replace(/<\/ul>\s*<ul>/g, "");
+
+  // 7. Ordered lists: 1. item
+  text = text.replace(/^\s*\d+\.\s+(.*$)/gim, "<ol><li>$1</li></ol>");
+  text = text.replace(/<\/ol>\s*<ol>/g, "");
+
+  // 8. Markdown Links: [text](url)
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+  // 9. Newlines to <br> outside code blocks
+  const parts = text.split(/(<div class="code-block-wrapper">[\s\S]*?<\/div>)/g);
+  for (let i = 0; i < parts.length; i++) {
+    if (!parts[i].startsWith('<div class="code-block-wrapper">')) {
+      parts[i] = parts[i].replace(/\n/g, "<br>");
+    }
+  }
+  return parts.join("");
 }
 
-function renderText(s) {
-  // Very small markdown: fenced code blocks + inline code. Avoids a full lib.
-  // First escape HTML.
-  let out = s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  // Fenced code blocks ```...```
-  out = out.replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${code}</code></pre>`);
-  // Inline code `...`
-  out = out.replace(/`([^`\n]+)`/g, (_, code) => `<code>${code}</code>`);
-  // Newlines → <br>
-  out = out.replace(/\n/g, "<br>");
-  return out;
+// ================= Health Check =================
+fetch("/api/health")
+  .then(r => r.json())
+  .then(h => {
+    if (!workspaceEl.value && h.default_workspace) {
+      workspaceEl.value = h.default_workspace;
+    }
+    const providers = h.providers_with_keys || [];
+    if (providers.length === 0) {
+      healthDot.classList.add("bad");
+      healthText.textContent = "未配置 API Key";
+      healthEl.title = "请在 .env 中配置 LOCA_DEEPSEEK_API_KEY 等凭据";
+    } else {
+      healthDot.classList.remove("bad");
+      const names = providers.map(p => p === "deepseek" ? "DeepSeek" : p === "openai" ? "OpenAI" : "Anthropic");
+      healthText.textContent = `${names.join(" · ")} 就绪`;
+      healthEl.title = `已加载模型服务: ${names.join(", ")}`;
+    }
+  })
+  .catch(() => {
+    healthDot.classList.add("bad");
+    healthText.textContent = "服务器连接中断";
+  });
+
+// ================= Session Management =================
+function setSession(id) {
+  sessionId = id || null;
+  if (id) {
+    sessionEl.style.display = "flex";
+    sessionText.textContent = id.length > 12 ? id.slice(0, 10) + "…" : id;
+    sessionEl.title = `会话 ID: ${id} (点击复制)\n命令行断点续聊: loca sessions show ${id}\n快照回滚: loca rollback ${id} <step>`;
+  } else {
+    sessionEl.style.display = "none";
+    sessionText.textContent = "";
+  }
 }
 
+sessionEl.addEventListener("click", () => {
+  if (sessionId) copyToClipboard(sessionId, `已复制会话 ID: ${sessionId}`);
+});
+
+btnNewChat.addEventListener("click", () => {
+  if (isStreaming) return;
+  if (history.length > 0 && !confirm("开启新对话将重置当前聊天界面并开启全新会话，是否继续？")) return;
+  sessionId = null;
+  setSession(null);
+  history = [];
+  
+  // Clear messages except welcome
+  chatContainer.innerHTML = "";
+  chatContainer.appendChild(welcomeHero);
+  welcomeHero.style.display = "flex";
+  showToast("已重置并就绪全新会话");
+});
+
+// Quick chips click binding
+document.querySelectorAll(".quick-chip").forEach(chip => {
+  chip.addEventListener("click", () => {
+    const prompt = chip.getAttribute("data-prompt");
+    if (prompt) {
+      inputEl.value = prompt;
+      inputEl.focus();
+      send();
+    }
+  });
+});
+
+// Auto-grow textarea
+inputEl.addEventListener("input", () => {
+  inputEl.style.height = "auto";
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + "px";
+});
+
+// ================= DOM Turn Renderers =================
 function appendUserTurn(text) {
-  const turn = el("div", "turn");
-  turn.appendChild(el("div", "role", "you"));
-  const b = el("div", "bubble");
-  b.innerHTML = renderText(text);
-  turn.appendChild(b);
-  messagesEl.appendChild(turn);
+  welcomeHero.style.display = "none";
+  const turn = document.createElement("div");
+  turn.className = "turn";
+
+  const head = document.createElement("div");
+  head.className = "turn-header";
+  head.innerHTML = `
+    <span class="turn-avatar user">👤</span>
+    <span>用户 / YOU</span>
+  `;
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble user";
+  bubble.innerHTML = parseMarkdown(text);
+
+  turn.appendChild(head);
+  turn.appendChild(bubble);
+  chatContainer.appendChild(turn);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function appendAssistantTurn() {
-  const turn = el("div", "turn");
-  turn.appendChild(el("div", "role", "assistant"));
-  const b = el("div", "bubble assistant typing");
-  turn.appendChild(b);
-  messagesEl.appendChild(turn);
+  const turn = document.createElement("div");
+  turn.className = "turn";
+
+  const head = document.createElement("div");
+  head.className = "turn-header";
+  head.innerHTML = `
+    <span class="turn-avatar assistant">⚡</span>
+    <span>LOCA AGENT</span>
+  `;
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble assistant typing-cursor";
+
+  const thinkingContainer = document.createElement("div");
+  thinkingContainer.className = "thinking-container";
+
+  const flowContainer = document.createElement("div");
+  flowContainer.className = "flow-container";
+
+  bubble.appendChild(thinkingContainer);
+  bubble.appendChild(flowContainer);
+
+  turn.appendChild(head);
+  turn.appendChild(bubble);
+  chatContainer.appendChild(turn);
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  return { turn, bubble: b };
+
+  return { turn, bubble, thinkingContainer, flowContainer };
 }
 
-function appendToolCard(parentBubble, name, args) {
-  const card = el("div", "tool-card");
-  const head = el("div");
-  head.appendChild(el("span", "name", `🔧 ${name}(`));
-  head.appendChild(document.createTextNode(JSON.stringify(args) + ")"));
-  card.appendChild(head);
-  parentBubble.appendChild(card);
-  parentBubble.parentElement.scrollTop = 99999;
+// Real-time Thinking Box Component (Collapsed by default)
+function createThinkingBox(container) {
+  const box = document.createElement("div");
+  box.className = "thinking-box collapsed";
+
+  const head = document.createElement("div");
+  head.className = "thinking-header";
+  head.innerHTML = `
+    <div class="thinking-title">
+      <span class="thinking-pulse"></span>
+      <span>思考过程</span>
+    </div>
+    <div class="thinking-meta">
+      <span class="thinking-status" data-done="false">思考中… (点击展开)</span>
+      <svg viewBox="0 0 24 24" class="icon thinking-arrow" style="width:12px;height:12px;"><polyline points="6 9 12 15 18 9"/></svg>
+    </div>
+  `;
+
+  const body = document.createElement("div");
+  body.className = "thinking-body";
+
+  head.addEventListener("click", () => {
+    box.classList.toggle("collapsed");
+    const isCollapsed = box.classList.contains("collapsed");
+    const statusSpan = head.querySelector(".thinking-status");
+    if (statusSpan) {
+      const isDone = statusSpan.dataset.done === "true";
+      if (isDone) {
+        statusSpan.textContent = isCollapsed ? "思考完成 (点击展开)" : "思考完成 (点击收起)";
+      } else {
+        statusSpan.textContent = isCollapsed ? "思考中… (点击展开)" : "思考中… (点击收起)";
+      }
+    }
+  });
+
+  box.appendChild(head);
+  box.appendChild(body);
+  container.appendChild(box);
+  return { box, body, head };
+}
+
+// Tool Call Card
+function appendToolCard(container, name, args) {
+  const card = document.createElement("div");
+  card.className = "tool-card";
+
+  let badgeClass = "default";
+  let toolIcon = "🔧";
+  if (name === "bash") { badgeClass = "bash"; toolIcon = "🖥️"; }
+  else if (name === "powershell") { badgeClass = "powershell"; toolIcon = "$_"; }
+  else if (name === "read_file") { badgeClass = "read_file"; toolIcon = "📄"; }
+  else if (name === "write_file" || name === "edit_file") { badgeClass = "write_file"; toolIcon = "✏️"; }
+
+  let previewText = "";
+  if (name === "bash" || name === "powershell") {
+    previewText = args.command || "";
+  } else if (name === "read_file" || name === "write_file" || name === "edit_file") {
+    previewText = args.path || "";
+  } else {
+    previewText = JSON.stringify(args);
+  }
+
+  card.innerHTML = `
+    <div class="tool-head">
+      <div class="tool-info">
+        <span class="tool-badge ${badgeClass}">${toolIcon} ${escapeHtml(name)}</span>
+        <span class="tool-cmd-preview" title="${escapeHtml(previewText)}">${escapeHtml(previewText)}</span>
+      </div>
+      <div class="tool-status-badge running">
+        <svg viewBox="0 0 24 24" class="icon" style="width:12px;height:12px;animation:spin 1s linear infinite;"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>
+        <span>执行中…</span>
+      </div>
+    </div>
+  `;
+
+  container.appendChild(card);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
   return card;
 }
 
-function appendToolResult(parentBubble, name, content, isError) {
-  const card = el("div", "tool-card" + (isError ? " is_error" : ""));
-  const head = el("div");
-  const nm = el("span", "name" + (isError ? " tool-err" : ""),
-    (isError ? "✗ " : "✓ ") + name);
-  head.appendChild(nm);
-  card.appendChild(head);
-  const pre = el("pre");
-  pre.textContent = content.length > 4000 ? content.slice(0, 4000) + "\n…(truncated)" : content;
-  card.appendChild(pre);
-  parentBubble.appendChild(card);
-  parentBubble.parentElement.scrollTop = 99999;
-}
+// Tool Result Card update or insert
+function updateOrCreateToolResult(container, currentCard, name, content, isError) {
+  let card = currentCard;
+  if (!card) {
+    card = document.createElement("div");
+    container.appendChild(card);
+  }
+  card.className = "tool-card" + (isError ? " is_error" : "");
 
-function appendUsageFooter(parentTurn, text) {
-  const f = el("div", "role");
-  f.textContent = text;
-  parentTurn.appendChild(f);
-}
+  let badgeClass = name === "bash" ? "bash" : name === "powershell" ? "powershell" : name === "read_file" ? "read_file" : "write_file";
+  const displayContent = content.length > 5000 ? content.slice(0, 5000) + "\n…(输出过长，已折叠截断)" : content;
+  const encodedContent = encodeURIComponent(content);
 
-function appendError(msg, retryable) {
-  const turn = el("div", "turn");
-  const b = el("div", "bubble");
-  b.style.background = "var(--tool-err)";
-  b.textContent = "⚠ " + msg + (retryable ? "  (transient — retries were exhausted)" : "");
-  turn.appendChild(b);
-  messagesEl.appendChild(turn);
-}
+  card.innerHTML = `
+    <div class="tool-head">
+      <div class="tool-info">
+        <span class="tool-badge ${badgeClass}">${isError ? "✗" : "✓"} ${escapeHtml(name)}</span>
+        <span class="tool-cmd-preview">输出结果 (${content.length} 字符)</span>
+      </div>
+      <div class="tool-status-badge ${isError ? "failed" : "success"}">
+        <span>${isError ? "执行失败" : "执行成功"}</span>
+      </div>
+    </div>
+    <div class="tool-body">
+      <pre>${escapeHtml(displayContent)}</pre>
+    </div>
+    <div class="tool-actions">
+      <button class="copy-btn-mini" data-copy="${encodedContent}">
+        <svg viewBox="0 0 24 24" class="icon" style="width:12px;height:12px;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        复制输出
+      </button>
+    </div>
+  `;
 
-function appendNote(text) {
-  const turn = el("div", "turn");
-  const n = el("div", "role", text);
-  turn.appendChild(n);
-  messagesEl.appendChild(turn);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function setSession(id) {
-  sessionId = id || null;
-  sessionEl.textContent = id ? `session ${id}` : "";
-  sessionEl.title = id
-    ? `Session ${id} — read it back with:  loca sessions show ${id}  ·  undoes also work as loca rollback ${id} <step>`
-    : "";
-}
-
-// A checkpoint note is the only place that knows *and* can undo a file edit, so
-// it carries the button. The step is what the rollback command takes.
+// Checkpoint note with rollback button
 function appendCheckpointNote(evt) {
-  const turn = el("div", "turn");
-  const n = el("div", "role");
-  const files = (evt.files || []).join(", ") || "nothing";
-  n.appendChild(document.createTextNode(
-    `⛁ checkpoint @ step ${evt.step} · ${files}${evt.restorable ? "" : " (not captured — too large to snapshot)"} `));
-  const undo = el("button", "undo", `↩ undo from step ${evt.step}`);
-  undo.title = `Restore every file this session edited from step ${evt.step} onward to how it looked before that step. Changes made by the shell tool cannot be undone.`;
-  undo.addEventListener("click", () => undoToStep(evt.step, undo));
-  n.appendChild(undo);
-  turn.appendChild(n);
-  messagesEl.appendChild(turn);
+  const turn = document.createElement("div");
+  turn.className = "turn";
+
+  const banner = document.createElement("div");
+  banner.className = "checkpoint-banner";
+
+  const files = (evt.files || []).join(", ") || "无变更";
+  const restorableTag = evt.restorable ? "" : " (文件过大未做物理快照)";
+
+  banner.innerHTML = `
+    <div class="checkpoint-desc">
+      <svg viewBox="0 0 24 24" class="icon" style="color:#10b981;flex-shrink:0;"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+      <div>
+        <strong>快照记录 @ Step ${evt.step}</strong> · 
+        <span class="checkpoint-files">${escapeHtml(files)}</span>${restorableTag}
+      </div>
+    </div>
+  `;
+
+  const btn = document.createElement("button");
+  btn.className = "btn-undo";
+  btn.innerHTML = `
+    <svg viewBox="0 0 24 24" class="icon" style="width:13px;height:13px;"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+    <span>回滚至该步骤</span>
+  `;
+  btn.title = `安全撤销 Step ${evt.step} 及之后的所有文件写入与修改（物理恢复旧版本或删除新创建文件）`;
+  btn.addEventListener("click", () => undoToStep(evt.step, btn));
+
+  banner.appendChild(btn);
+  turn.appendChild(banner);
+  chatContainer.appendChild(turn);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 async function undoToStep(step, button) {
   if (!sessionId) {
-    appendNote("↩ no session yet — send a message first");
+    appendSystemNote("info", "当前无活跃会话，请先进行对话生成修改");
     return;
   }
   const ok = window.confirm(
-    `Undo step ${step} and everything after it?\n\n` +
-    `Files this session wrote from step ${step} on are put back the way they ` +
-    `were before that step; files it created are deleted. ` +
-    `Changes made by the shell tool cannot be undone.`);
+    `【确认文件快照回滚】\n\n` +
+    `确定要撤销 Step ${step} 及其之后的所有文件变动吗？\n\n` +
+    `• 本会话在该步骤之后写入或修改的文件将被还原为修改前的快照状态。\n` +
+    `• 本会话新建的文件将被彻底安全删除。\n` +
+    `• Shell 外部环境改动不在此快照管理范围内。`
+  );
   if (!ok) return;
+
   button.disabled = true;
+  button.innerHTML = `<span>回滚执行中…</span>`;
+
   try {
     const resp = await fetch("/api/rollback", {
       method: "POST",
@@ -336,48 +1531,78 @@ async function undoToStep(step, button) {
     });
     const out = await resp.json();
     if (!out.ok) {
-      appendNote(`↩ ${out.message}`);
+      appendSystemNote("warn", `回滚未生效: ${out.message}`);
       return;
     }
     const parts = (out.files || []).map(f =>
-      f.action === "restored" ? `restored ${f.path}`
-        : f.action === "deleted" ? `deleted ${f.path} (did not exist before that step)`
-          : `skipped ${f.path}`);
-    appendNote(`↩ undid ${out.applied} checkpoint(s) from step ${out.step} · ` +
-      (parts.length ? parts.join(" · ") : "the workspace already matched the snapshots"));
-    if (out.skipped && out.skipped.length) {
-      appendNote(`↩ skipped: ${out.skipped.join(", ")}`);
-    }
-    appendNote("↩ the messages above still show the undone edit — what changed is the files on disk");
+      f.action === "restored" ? `还原 ${f.path}`
+        : f.action === "deleted" ? `删除新建 ${f.path}`
+          : `跳过 ${f.path}`);
+    
+    appendSystemNote("info", `✓ 成功回滚 ${out.applied} 个快照节点 (Step ${out.step} 之后) · ${parts.length ? parts.join(" · ") : "工作区状态与历史快照一致"}`);
+    showToast("快照回滚完成！磁盘文件已还原");
   } catch (err) {
-    appendNote(`↩ rollback failed: ${err.message}`);
+    appendSystemNote("error", `回滚请求异常: ${err.message}`);
   } finally {
     button.disabled = false;
+    button.innerHTML = `
+      <svg viewBox="0 0 24 24" class="icon" style="width:13px;height:13px;"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+      <span>已完成回滚</span>
+    `;
   }
 }
 
-// -- streaming --------------------------------------------------------------
+function appendSystemNote(level, text) {
+  const turn = document.createElement("div");
+  turn.className = "turn";
+  const note = document.createElement("div");
+  note.className = `sys-note ${level}`;
+  note.innerHTML = `
+    <svg viewBox="0 0 24 24" class="icon" style="width:14px;height:14px;flex-shrink:0;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <span>${escapeHtml(text)}</span>
+  `;
+  turn.appendChild(note);
+  chatContainer.appendChild(turn);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function appendTurnStats(parentTurn, statsText) {
+  const stats = document.createElement("div");
+  stats.className = "turn-stats";
+  stats.innerHTML = `
+    <svg viewBox="0 0 24 24" class="icon" style="width:12px;height:12px;flex-shrink:0;"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+    <span>${escapeHtml(statsText)}</span>
+  `;
+  parentTurn.appendChild(stats);
+}
+
+// ================= SSE Chat Stream =================
 async function send() {
+  if (isStreaming) return;
   const text = inputEl.value.trim();
   if (!text) return;
+
   const ws = workspaceEl.value.trim();
   if (ws && ws !== lastWorkspace) {
-    // Announce it: a stale value must not silently redirect the tools.
-    appendNote(`workspace · ${ws}`);
+    appendSystemNote("info", `工作空间重定向 · ${ws}`);
     lastWorkspace = ws;
   }
+
   appendUserTurn(text);
   history.push({ role: "user", content: text });
   inputEl.value = "";
+  inputEl.style.height = "auto";
   sendBtn.disabled = true;
+  isStreaming = true;
 
-  const { turn, bubble } = appendAssistantTurn();
-  let acc = "";
-  let reasoning = "";
-  let currentToolCard = null;
-  let lastArgs = null;
-  let lastName = null;
+  const { turn, bubble, thinkingContainer, flowContainer } = appendAssistantTurn();
+  let reasoningAccumulator = "";
+  let thinkingComponent = null;
+  let currentTextBlockEl = null;
+  let currentTextRaw = "";
+  let fullAssistantText = "";
   let usageInfo = null;
+  let currentToolCard = null;
 
   try {
     const resp = await fetch("/api/chat", {
@@ -390,117 +1615,166 @@ async function send() {
         session_id: sessionId,
       }),
     });
+
     if (!resp.ok) {
-      bubble.classList.remove("typing");
-      bubble.textContent = "⚠ HTTP " + resp.status;
+      bubble.classList.remove("typing-cursor");
+      bubble.textContent = `⚠ 服务请求异常: HTTP ${resp.status} (${resp.statusText})`;
       return;
     }
+
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      // sse-starlette terminates lines with \r\n (per the SSE spec);
-      // normalize so the blank-line scan below always matches.
+
       buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
-      // SSE: events separated by blank line.
       let idx;
       while ((idx = buffer.indexOf("\n\n")) !== -1) {
         const raw = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 2);
-        // Each event is "event: message\ndata: <json>\n"
+
         const dataLine = raw.split("\n").find(l => l.startsWith("data: "));
         if (!dataLine) continue;
         const payload = dataLine.slice(6);
         let evt;
         try { evt = JSON.parse(payload); } catch { continue; }
-        handle(evt);
+        handleEvent(evt);
       }
     }
   } catch (err) {
-    bubble.classList.remove("typing");
-    bubble.textContent = "⚠ " + err.message;
+    bubble.classList.remove("typing-cursor");
+    appendSystemNote("error", `通信中断: ${err.message}`);
   } finally {
-    bubble.classList.remove("typing");
+    bubble.classList.remove("typing-cursor");
     sendBtn.disabled = false;
+    isStreaming = false;
     inputEl.focus();
   }
 
-  function flushReasoning() {
-    const text = reasoning.trim();
-    reasoning = "";
-    if (text) appendNote(`thinking · ${text.length > 400 ? text.slice(0, 400) + "…" : text}`);
+  function flushThinkingState() {
+    if (thinkingComponent && reasoningAccumulator) {
+      const statusSpan = thinkingComponent.head.querySelector(".thinking-status");
+      if (statusSpan) {
+        statusSpan.dataset.done = "true";
+        statusSpan.textContent = thinkingComponent.box.classList.contains("collapsed")
+          ? "思考完成 (点击展开)"
+          : "思考完成 (点击收起)";
+      }
+      const pulse = thinkingComponent.head.querySelector(".thinking-pulse");
+      if (pulse) pulse.style.animation = "none";
+    }
   }
 
-  function handle(evt) {
+  function handleEvent(evt) {
     if (evt.type === "session") {
       setSession(evt.id);
-    } else if (evt.type === "text") {
-      flushReasoning();
-      acc += evt.content;
-      bubble.innerHTML = renderText(acc);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
     } else if (evt.type === "reasoning") {
-      // Thinking arrives token by token on the same stream as the reply. Buffer
-      // it and post one note when the visible answer starts — a note per token
-      // would bury the conversation.
-      reasoning += evt.content;
+      if (!thinkingComponent) {
+        thinkingComponent = createThinkingBox(thinkingContainer);
+      }
+      reasoningAccumulator += evt.content;
+      thinkingComponent.body.textContent = reasoningAccumulator;
+      thinkingComponent.body.scrollTop = thinkingComponent.body.scrollHeight;
+      // Do not auto-scroll outer viewport while reasoning is collapsed to prevent jitter
+    } else if (evt.type === "text") {
+      flushThinkingState();
+      fullAssistantText += evt.content;
+      currentTextRaw += evt.content;
+
+      if (!currentTextBlockEl) {
+        currentTextBlockEl = document.createElement("div");
+        currentTextBlockEl.className = "text-block";
+        flowContainer.appendChild(currentTextBlockEl);
+      }
+      currentTextBlockEl.innerHTML = parseMarkdown(currentTextRaw);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
     } else if (evt.type === "tool_call") {
-      lastName = evt.name;
-      lastArgs = evt.args;
-      currentToolCard = appendToolCard(bubble, evt.name, evt.args);
+      flushThinkingState();
+
+      // Clean up any pure English preamble emitted before tool call in a Chinese conversation
+      const userIsChinese = /[\u4e00-\u9fa5]/.test(text);
+      if (userIsChinese && currentTextBlockEl && currentTextRaw && !/[\u4e00-\u9fa5]/.test(currentTextRaw)) {
+        currentTextBlockEl.remove();
+        currentTextBlockEl = null;
+        if (fullAssistantText.endsWith(currentTextRaw)) {
+          fullAssistantText = fullAssistantText.slice(0, fullAssistantText.length - currentTextRaw.length);
+        }
+      }
+
+      currentTextBlockEl = null;
+      currentTextRaw = "";
+
+      // Do not display bash or powershell process cards
+      if (evt.name !== "bash" && evt.name !== "powershell") {
+        currentToolCard = appendToolCard(flowContainer, evt.name, evt.args);
+      } else {
+        currentToolCard = null;
+      }
     } else if (evt.type === "tool_result") {
-      appendToolResult(bubble, evt.name, evt.content, evt.is_error);
+      if (evt.name !== "bash" && evt.name !== "powershell" && currentToolCard) {
+        updateOrCreateToolResult(flowContainer, currentToolCard, evt.name, evt.content, evt.is_error);
+      }
+      currentToolCard = null;
+      currentTextBlockEl = null;
+      currentTextRaw = "";
     } else if (evt.type === "usage") {
       usageInfo = evt;
-    } else if (evt.type === "done") {
-      flushReasoning();
-      // Append a footer with stats.
-      const stats = [
-        `steps: ${evt.steps}`,
-        `tokens: ${evt.total_tokens}`,
-        `finish: ${evt.reason}`,
-      ];
-      if (usageInfo) {
-        stats.push(`(prompt ${usageInfo.prompt} · completion ${usageInfo.completion})`);
-      }
-      appendUsageFooter(turn, stats.join("  ·  "));
-      history.push({ role: "assistant", content: acc });
-    } else if (evt.type === "context_trimmed") {
-      appendNote(`context trimmed · dropped ${evt.dropped} old message(s) · ~${evt.estimated_tokens}/${evt.budget} tokens`);
-    } else if (evt.type === "context_summarized") {
-      appendNote(`context compacted · ${evt.summarized} old message(s) folded into a summary (~${evt.summary_tokens} tokens) · ~${evt.estimated_tokens}/${evt.budget} tokens`);
     } else if (evt.type === "checkpoint") {
       appendCheckpointNote(evt);
+    } else if (evt.type === "context_trimmed") {
+      appendSystemNote("info", `⚡ 上下文修剪：自动丢弃 ${evt.dropped} 条旧消息以保持 token 预算 (~${evt.estimated_tokens}/${evt.budget} tokens)`);
+    } else if (evt.type === "context_summarized") {
+      appendSystemNote("info", `⚡ 上下文摘要压缩：已将 ${evt.summarized} 条历史消息归纳压缩 (~${evt.summary_tokens} tokens, 总量: ~${evt.estimated_tokens}/${evt.budget})`);
     } else if (evt.type === "recovery") {
-      appendNote(evt.reason === "length"
-        ? "output cap reached · asking the model to continue"
-        : `transient provider failure · ${evt.detail || evt.reason} · retrying`);
+      appendSystemNote("warn", evt.reason === "length" 
+        ? "⚡ 检测到输出达到上限，Agent 正在自动触发接续 (Recovery)..." 
+        : `⚡ 提供商偶发故障 (${evt.detail || evt.reason})，正在自动重试...`);
     } else if (evt.type === "error") {
-      bubble.classList.remove("typing");
-      appendError(evt.message, evt.retryable);
+      bubble.classList.remove("typing-cursor");
+      appendSystemNote("error", `执行错误: ${evt.message}${evt.retryable ? " (重试次数耗尽)" : ""}`);
+    } else if (evt.type === "done") {
+      flushThinkingState();
+      bubble.classList.remove("typing-cursor");
+      const parts = [
+        `执行步数: ${evt.steps}`,
+        `总 Tokens: ${evt.total_tokens}`,
+        `结束状态: ${evt.reason === "stop" ? "完成" : evt.reason}`,
+      ];
+      if (usageInfo) {
+        parts.push(`(Prompt: ${usageInfo.prompt} · Completion: ${usageInfo.completion})`);
+      }
+      appendTurnStats(turn, parts.join("  ·  "));
+      history.push({ role: "assistant", content: fullAssistantText });
     }
   }
 }
 
+// ================= Event Listeners =================
 sendBtn.addEventListener("click", send);
+
 inputEl.addEventListener("keydown", e => {
-  if (e.isComposing) return; // IME confirm-Enter must not send (Chinese input).
+  if (e.isComposing) return; // Support Chinese IME confirm Enter
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     send();
   }
 });
-// Fallback for runtimes that deliver Enter without a usable keydown; the
-// empty-value guard makes it a no-op when the keydown path already sent.
+
 inputEl.addEventListener("keyup", e => {
   if (e.isComposing) return;
-  if (e.key === "Enter" && !e.shiftKey && inputEl.value.trim()) send();
+  if (e.key === "Enter" && !e.shiftKey && inputEl.value.trim() && !isStreaming) {
+    send();
+  }
 });
-inputEl.addEventListener("input", () => {
-  inputEl.style.height = "auto";
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + "px";
+
+// Logo click resets to welcome state if empty
+document.getElementById("btn-logo").addEventListener("click", () => {
+  if (history.length === 0) {
+    welcomeHero.style.display = "flex";
+  }
 });
 </script>
 </body>

@@ -6,8 +6,8 @@
 
 ## 1. 项目概览 (Project Overview)
 
-**Loca** 是一个轻量级、零重型框架依赖（无 LangChain / LlamaIndex）的工业级 Coding Agent Harness（运行时底座）。
-* **核心目标**：统一 DeepSeek / Anthropic / OpenAI 工具调用协议，提供高容错流式执行循环、双 Shell 宿主安全防御、断点续聊与原子级快照回滚、全链路 Trace 与自动化行为式评测基准。
+**Loca** 是一个轻量级、零重型框架依赖（无 LangChain / LlamaIndex）的 Coding Agent Harness（运行时底座）。
+* **核心目标**：统一 DeepSeek / Anthropic / OpenAI 工具调用协议，提供流式执行循环、双 Shell 宿主安全防御、断点续聊与快照回滚、全链路 Trace 与自动化行为式评测基准。
 * **语言与版本**：Python 3.13+
 * **主代码目录**：`loca/` (Harness 核心), `web/` (FastAPI + SSE Web GUI), `tests/` (自动化测试), `docs/` (项目文档)
 
