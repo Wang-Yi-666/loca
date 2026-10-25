@@ -160,4 +160,4 @@
 ---
 
 *完整跑法、报告字段含义与已知限制见 [`benchmark.md`](benchmark.md)；
-原始报告在 [`benchmarks/deepseek-36.json`](benchmarks/deepseek-36.json)。*
+最新 97.2% 跑分数据已归档于 [`benchmarks/deepseek-36.json`](benchmarks/deepseek-36.json)（本文保留 2026-09-18 初始 91.7% 评测与 3 项失败的复盘记录）。*

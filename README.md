@@ -1,7 +1,7 @@
 # Loca: 轻量级 Coding Agent 运行时底座 (Harness)
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-lightgrey.svg)]()
 [![Offline Tests: 485 Passed](https://img.shields.io/badge/tests-485%20passed-success.svg)]()
 [![Benchmark pass@1: 97.2%](https://img.shields.io/badge/benchmark%20pass%401-97.2%25%20(35%2F36)-brightgreen.svg)](docs/benchmark.md)
@@ -311,4 +311,4 @@ python -m loca.cli bench verify
 
 ## 开源许可证
 
-本项目基于 [MIT License](https://opensource.org/licenses/MIT) 开源。
+本项目基于 [MIT License](LICENSE) 开源。

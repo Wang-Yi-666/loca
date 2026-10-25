@@ -223,18 +223,22 @@ provider 必须是**每次调用现造一个**（`provider_factory`），因为 
   "provider": "deepseek",
   "task_count": 36,
   "total_attempts": 36,
-  "passed_attempts": 33,
-  "pass_at_1": 0.9167,
-  "solved_tasks": 33,
-  "pass_at_k": 0.9167,
-  "outcomes": { "passed": 33, "wrong_answer": 3 },
-  "failures": { "wrong_answer": 3 },
+  "passed_attempts": 35,
+  "pass_at_1": 0.9722,
+  "solved_tasks": 35,
+  "pass_at_k": 0.9722,
+  "outcomes": { "passed": 35, "wrong_answer": 1 },
+  "failures": { "wrong_answer": 1 },
   "by_difficulty": {
     "simple": { "tasks": 14, "passed": 13, "pass_rate": 0.9286,
-                "tokens_per_pass": 8070.9, "steps_per_pass": 4.92 }
+                "tokens_per_pass": 11355.0, "steps_per_pass": 5.15 },
+    "medium": { "tasks": 12, "passed": 12, "pass_rate": 1.0,
+                "tokens_per_pass": 16803.2, "steps_per_pass": 5.83 },
+    "hard": { "tasks": 10, "passed": 10, "pass_rate": 1.0,
+              "tokens_per_pass": 18685.5, "steps_per_pass": 5.4 }
   },
-  "cost": { "tokens_total": 399218.0, "tokens_per_pass": 11120.18,
-            "tokens_per_failure": 10750.67, "steps_per_pass": 5.27 },
+  "cost": { "tokens_total": 536108.0, "tokens_per_pass": 15074.43,
+            "tokens_per_failure": 8503.0, "steps_per_pass": 5.34 },
   "results": [ { "task_id": "…", "outcome": "passed", "steps": 4, "tokens": 5976,
                  "tool_calls": 3, "tool_errors": 0, "detail": "…" } ]
 }
@@ -277,7 +281,6 @@ provider 必须是**每次调用现造一个**（`provider_factory`），因为 
 把验收标准显式化、让循环在收工前自己过一遍题面里的边界约束。
 
 > 值得注意的是，在早期版本中曾因缺乏中间反馈而过早交卷的 `impl-word-wrap` 以及未严密拦截畸形输入的 `impl-expression-evaluator`，在双 Shell 体系、中文约束与防御加固后，均已在本次全量实测中 100% 满分通过。
-
 
 ## 7. 加一道新题
 
