@@ -181,7 +181,7 @@ deleted  hello.py (did not exist before that step)
 
 | 限制 | 原因 |
 |---|---|
-| **`shell` 造成的改动回滚不了** | shell 能碰任何东西，为每条命令快照整个工作区不现实。命令输出里会提醒你这一点。 |
+| **`bash` / `powershell` 造成的改动回滚不了** | shell 能碰任何东西，为每条命令快照整个工作区不现实（命令输出里会提醒你这一点；但系统内置高危破坏指令拦截以防误删）。 |
 | **超过 2 MB 的文件只记名字，不存内容** | 不想让会话数据库变成垃圾场。这类文件在报告里会标 `skipped`。 |
 | **默认只认 `write_file` / `edit_file`** | 这两个是「改文件」的工具。要加别的，在 `CheckpointManager(tracked=...)` 里注册 `{工具名: (参数名,)}` 即可。 |
 | **不会动工作区以外的东西** | 快照和还原都走同一套沙箱检查，`../` 越界一律拒绝。 |
@@ -264,10 +264,10 @@ compacted: earlier turns folded into a summary
 ## 七、常见问题
 
 **Q：`rollback` 说 `no checkpoints at step N or later`，什么意思？**
-那个 step 范围内没有检查点。多半是：这步只跑了 `shell`，或者只调了 `read_file` 这种不改文件的工具。用 `loca sessions show <id>` 看真实的检查点清单。
+那个 step 范围内没有检查点。多半是：这步只跑了 `bash` 或 `powershell`，或者只调了 `read_file` 这种不改文件的工具。用 `loca sessions show <id>` 看真实的检查点清单。
 
 **Q：聊了好几轮，一个 `⛁ checkpoint` 都没看到？**
-说明这几轮里没有**写文件**的工具调用 —— 只有 `write_file` / `edit_file` 会产生快照，`read_file` / `shell` 都不会（`shell` 改了文件也不记，这正是它撤不回来的原因）。另一个可能是 CLI 加了 `--no-save`：那时既不落库也不做检查点，是刻意的一次性模式。
+说明这几轮里没有**写文件**的工具调用 —— 只有 `write_file` / `edit_file` 会产生快照，`read_file` / `bash` / `powershell` 都不会（shell 改了文件也不记，这正是它撤不回来的原因）。另一个可能是 CLI 加了 `--no-save`：那时既不落库也不做检查点，是刻意的一次性模式。
 
 **Q：`rollback` 输出里有 `skipped`？**
 三种可能：文件超过 2 MB（没存内容）、快照指向工作区外、或者没有权限写入。原因都写在括号里。

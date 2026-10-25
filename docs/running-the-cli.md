@@ -236,7 +236,7 @@ loca **只跑 Windows**（点这里看 [运行环境](../README.md#运行环境)
 | 打字没反应 / 打不进去 | 终端没获得键盘焦点 | 用鼠标点一下终端区域再打 |
 | 它说"路径不在工作区内" | 路径沙箱拦截 | 正常行为。要么把文件放到工作目录里，要么用 `--workspace` 重新指定 |
 | 它说 `--workspace` 看起来像 Git-Bash 路径 | 你写成了 `/d/repo` | 改成 `D:\repo`。见第五节 |
-| 每问一句都要重新自我介绍 | 正常，但多轮是保留上下文的 | `loop.last_transcript` 会回灌，所以它能记住这一局聊过什么。退出后不保存（持久化在 Week 4 做） |
+| 退出重新启动后发现是新会话 | 默认每次新启动分配全新 session_id | 若要恢复之前的对话历史继续聊，启动时传入 `--session <id>`；查看历史会话列表可使用 `loca sessions` |
 | 输出里出现 `error: ...` | 调用模型失败或重试耗尽 | 看完整报错；常见是 key 无效或网络不通 |
 
 ---
@@ -250,11 +250,25 @@ loca **只跑 Windows**（点这里看 [运行环境](../README.md#运行环境)
 # 指定工作目录
 .venv\Scripts\python.exe -m loca.cli chat --workspace D:\some\repo
 
-# 纯聊天（不调用工具）
+# 恢复指定历史会话断点续聊（不存在则自动以此 id 新建）
+.venv\Scripts\python.exe -m loca.cli chat --session my-task
+
+# 临时体验模式（内存运行，不保存至 SQLite 会话库与快照）
+.venv\Scripts\python.exe -m loca.cli chat --no-save
+
+# 纯聊天（不调用工具，用于网络与 Provider 排错）
 .venv\Scripts\python.exe -m loca.cli chat --no-tools
+
+# REPL 会话内快捷指令（输入命令回车生效）
+/help        # 查看所有 REPL 内置指令说明
+/session     # 查看当前会话 ID 与已记录消息统计
+/rollback    # 撤销最近一次文件修改（或 /rollback <step> 指定步数）
+/compact     # 手动触发上下文语义压缩
+/trace       # 查看当前会话累计步数、Token 消耗与耗时明细
 
 # 退出：输入 exit / quit / :q，或按 Ctrl+C
 # 它答到一半想打断：Ctrl+C（只打断这一轮，不退出）
 ```
 
 拿到 `you:` 提示符就能开始对话了。
+

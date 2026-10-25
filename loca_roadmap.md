@@ -2,7 +2,7 @@
 
 > 6 周路线图 + 实时进度清单。每完成一项就勾选，状态同步更新。
 
-最后更新：2026-10-21 21:05
+最后更新：2026-10-25 10:15
 
 ---
 
@@ -352,6 +352,21 @@
 ---
 
 ## 本次会话变更日志
+
+### 2026-10-25 — Web GUI 升级折叠思维链、Windows 双击启动器与技术文档全量同步
+
+- **Web GUI 交互体验升级**（`web/index.html` + `web/server.py`）：
+  - 引入可折叠思维链卡片（`<details class="thinking-block">`），模型输出的流式思考过程（`reasoning_content`）自动折叠收拢，避免长篇推理占据整个屏幕，点击随时展开复盘；
+  - 提示词层强化中文约束与工具边界，杜绝输出非中文或幻觉工具。
+- **Windows 一键快捷启动器**（`run_gui.bat` + `scripts/run_gui.py`）：
+  - 根目录新增 `run_gui.bat`，双击即可直接检测环境、启动 Web 服务并在默认浏览器打开 `http://127.0.0.1:8765`。
+- **评测基准数据实测更新**（`docs/benchmark.md` + `docs/benchmarks/deepseek-36.json`）：
+  - 全量 36 题自动化评测 pass@1 达 97.2%（35/36），Hard 难度 10/10 全部一次性通过，同步修正评测文档中的案例分析与失效引用。
+- **技术文档与代码实现全面对齐**：
+  - 更新 `README.md`，同步命令速查表、启动方式与最新架构设计；
+  - 更新 `docs/running-the-web-gui.md`，补充双击启动、思维链展示与非阻塞推流说明；
+  - 更新 `docs/running-the-cli.md`，清理已过时的待办描述，补齐会话断点续聊与 REPL 内快捷指令；
+  - 更新 `docs/traces-and-reports.md` 与 `docs/sessions-and-rollback.md`，明确双 Shell（`bash` / `powershell`）命名与 Web 端会话边界。
 
 ### 2026-10-13 — 审查问题修复：Web 异步非阻塞队列桥接 + 只读工具并发优化 + 危险命令防御 + 补齐 Shell 测试
 

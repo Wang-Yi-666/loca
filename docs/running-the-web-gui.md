@@ -111,6 +111,16 @@ INFO:     Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
 
   激活成功的标志是命令行前面多出 `(.venv)`。用完可以敲 `deactivate` 退出。
 
+### 启动方式 C：Windows 双击一键启动（`run_gui.bat`，最便捷）
+
+如果你不想手动敲命令，也不需要开着 VS Code 编辑器，直接在项目根目录：
+
+1. **双击 `run_gui.bat`**（或在终端执行 `.\run_gui.bat`）；
+2. 脚本会自动检查并激活 `.venv` 虚拟环境，启动 Web 服务后台，并在就绪后**自动调起系统默认浏览器**打开 `http://127.0.0.1:8765`；
+3. 想关闭时，直接关闭弹出的终端控制台窗口即可。
+
+该脚本底层由 `scripts/run_gui.py` 驱动，内置了针对 Windows 控制台环境的端口状态轮询与浏览器拉起逻辑。
+
 ---
 
 ## 四、确认它真的活着
@@ -156,11 +166,12 @@ INFO:     127.0.0.1:55538 - "GET / HTTP/1.1" 200 OK
 ## 五、开始用
 
 1. 页面底部有输入框，打字后 **回车** 发送（部分浏览器是 `Ctrl+Enter`，界面上有提示）
-2. 你会看到三类气泡：
-   - **左边的回答**：模型流式吐出的文字
-   - **工具调用卡**：显示 `→ read_file(path='README.md')` 和结果 `✓ read_file`，绿色对勾=成功，红色叉=失败
-   - **红色错误条**：出问题时出现（比如 key 无效、网络不通）
-3. 每轮结束会显示 `done` 信息：走了几步、花了多少 token、为什么停
+2. 你会看到四类主要内容气泡：
+   - **折叠思维链（Thinking Block）**：针对 DeepSeek 等支持深度推理的模型，其输出的思维链（`reasoning_content`）会自动收拢在可折叠卡片中，避免冗长思考占据整个界面；点击即可随时展开/收起查看模型推理推导过程。
+   - **左边的回答**：模型流式吐出的最终文字回答（已在提示词层面严格约束全中文交付）。
+   - **工具调用卡**：显示 `→ read_file(path='README.md')` 和结果 `✓ read_file`，绿色对勾=成功，红色叉=失败。多个只读工具会并发加速执行。
+   - **红色错误条**：出问题时出现（比如 key 无效、网络不通、路径超出工作区等）。
+3. 每轮结束会显示 `done` 信息：走了几步、花了多少 token、为什么停。
 
 ### 几个值得试试的问题
 
@@ -381,7 +392,10 @@ Get-NetTCPConnection -LocalPort 8765 | ForEach-Object { Stop-Process -Id $_.Owni
 ## 十、一页速查（贴在手边）
 
 ```bash
-# 启动（VS Code：Ctrl+Shift+D → 选 loca serve (Web GUI) → F5）
+# 启动方式 1：Windows 双击 run_gui.bat（最便捷，自动打开浏览器）
+.\run_gui.bat
+
+# 启动方式 2：终端启动（VS Code 调试面板：Ctrl+Shift+D → 选 loca serve (Web GUI) → F5）
 .venv\Scripts\python.exe -m loca.cli serve
 
 # 换端口启动
